@@ -198,7 +198,8 @@
             <span class="skeleton-block skeleton-detail-uri"></span>
           </div>
           <div class="detail-actions">
-            <span class="skeleton-block skeleton-action"></span>
+            <span class="skeleton-block skeleton-icon"></span>
+            <span class="skeleton-block skeleton-icon"></span>
             <span v-if="!shareMode" class="skeleton-block skeleton-icon"></span>
           </div>
         </header>
@@ -226,12 +227,17 @@
             <h2>{{ formatBreakableUri(selectedRequest.target) }}</h2>
           </div>
           <div class="detail-actions">
-            <button class="small-action" type="button" @click="copy(selectedRequest.detailUrl, 'request-link')">
+            <button class="small-action icon-only" type="button" title="Copy request link" @click="copy(selectedRequest.detailUrl, 'request-link')">
               <Transition name="icon-fade" mode="out-in">
                 <Check v-if="copiedTarget === 'request-link'" key="request-check" :size="15" :stroke-width="1.9" aria-hidden="true" />
                 <Link2 v-else key="request-link-icon" :size="15" :stroke-width="1.85" aria-hidden="true" />
               </Transition>
-              Copy link
+            </button>
+            <button class="small-action icon-only" type="button" title="Copy request" @click="copyFullRequest">
+              <Transition name="icon-fade" mode="out-in">
+                <Check v-if="copiedTarget === 'full-request'" key="full-request-check" :size="15" :stroke-width="1.9" aria-hidden="true" />
+                <FileText v-else key="full-request-icon" :size="15" :stroke-width="1.85" aria-hidden="true" />
+              </Transition>
             </button>
             <button
               v-if="!shareMode"
@@ -392,6 +398,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  FileText,
   Link2,
   MoreHorizontal,
   Plus,
@@ -845,6 +852,50 @@ function copyRequestBody() {
     ? selectedRequest.value.bodyBase64
     : selectedRequest.value.bodyText
   void copy(value || '', 'request-body')
+}
+
+function copyFullRequest() {
+  if (!selectedRequest.value) return
+  void copy(formatHTTPClipboardRequest(selectedRequest.value), 'full-request')
+}
+
+function formatHTTPClipboardRequest(request) {
+  const target = request.target || request.path || '/'
+  const lines = [`${request.method || 'GET'} ${target} HTTP/1.1`]
+  const host = requestHost(request)
+  if (host) lines.push(`Host: ${host}`)
+
+  const headers = Object.entries(request.headers || {})
+    .filter(([name]) => !nameEquals(name, 'Host'))
+    .sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase()))
+
+  for (const [name, values] of headers) {
+    for (const value of values || []) {
+      lines.push(`${name}: ${value}`)
+    }
+  }
+
+  if (!request.bodySize && !request.bodyTruncated) {
+    return lines.join('\n')
+  }
+
+  const body = request.bodyEncoding === 'base64'
+    ? '[binary body omitted]'
+    : (request.bodyText || '')
+  const suffix = request.bodyTruncated ? `${body ? '\n\n' : ''}[body truncated]` : ''
+  return `${lines.join('\n')}\n\n${body}${suffix}`
+}
+
+function requestHost(request) {
+  try {
+    return new URL(request.detailUrl || window.location.href, window.location.origin).host
+  } catch {
+    return window.location.host
+  }
+}
+
+function nameEquals(left, right) {
+  return String(left).toLowerCase() === String(right).toLowerCase()
 }
 
 function headerNameCopyTarget(name) {

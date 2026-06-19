@@ -593,7 +593,7 @@ func (a *App) handleCapture(w http.ResponseWriter, r *http.Request) {
 		})
 		if err == nil {
 			if webhook.TelegramEnabled {
-				a.notifyTelegramAsync(webhook, request, r.Host)
+				a.notifyTelegramAsync(webhook, request, r.Host, a.requestDetailURL(r, webhook, request))
 			}
 			a.writeCaptureResponse(w, r)
 			return
@@ -773,9 +773,13 @@ func (a *App) requestResponse(r *http.Request, webhook Webhook, request Captured
 		BodyTruncated: request.BodyTruncated,
 		ContentLength: request.ContentLength,
 		CreatedAt:     request.CreatedAt,
-		DetailURL:     fmt.Sprintf("%s/at/%s/%s", a.baseURL(r), webhook.Slug, request.PublicID),
+		DetailURL:     a.requestDetailURL(r, webhook, request),
 		ShareURL:      fmt.Sprintf("%s/share/%s/%s?id=%s", a.baseURL(r), webhook.Slug, request.PublicID, a.shareToken(webhook)),
 	}
+}
+
+func (a *App) requestDetailURL(r *http.Request, webhook Webhook, request CapturedRequest) string {
+	return fmt.Sprintf("%s/at/%s/%s", a.baseURL(r), webhook.Slug, request.PublicID)
 }
 
 func (a *App) baseURL(r *http.Request) string {

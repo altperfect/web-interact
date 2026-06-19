@@ -27,7 +27,7 @@ const telegramSendTimeout = 10 * time.Second
 
 var notifyHTTPMu sync.Mutex
 
-func (a *App) notifyTelegramAsync(webhook Webhook, request CapturedRequest, host string) {
+func (a *App) notifyTelegramAsync(webhook Webhook, request CapturedRequest, host string, detailURL string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -40,7 +40,7 @@ func (a *App) notifyTelegramAsync(webhook Webhook, request CapturedRequest, host
 			return
 		}
 
-		messages := buildTelegramRequestMessages(webhook, request, host)
+		messages := buildTelegramRequestMessages(webhook, request, host, detailURL)
 		for _, message := range messages {
 			if err := sendTelegramMessage(settings, message); err != nil {
 				logNotificationError("send telegram notification", err)
@@ -156,7 +156,7 @@ func telegramProxyURL(settings TelegramSettings) (*url.URL, error) {
 	return proxyURL, nil
 }
 
-func buildTelegramRequestMessages(webhook Webhook, request CapturedRequest, host string) []string {
+func buildTelegramRequestMessages(webhook Webhook, request CapturedRequest, host string, detailURL string) []string {
 	rawRequest := sanitizeTelegramCodeBlock(formatHTTPNotificationRequest(request, host))
 	chunks := splitMessageRunes(rawRequest, telegramMessageLimit)
 	if len(chunks) == 0 {
@@ -169,6 +169,9 @@ func buildTelegramRequestMessages(webhook Webhook, request CapturedRequest, host
 		formatTelegramTime(request.CreatedAt),
 		webhook.Slug,
 	)
+	if link := telegramMarkdownLink("View here", detailURL); link != "" {
+		meta += "\n" + link
+	}
 
 	messages := make([]string, 0, len(chunks))
 	for i, chunk := range chunks {
@@ -185,6 +188,16 @@ func buildTelegramRequestMessages(webhook Webhook, request CapturedRequest, host
 		messages = append(messages, prefix+"```http\n"+chunk+"\n```")
 	}
 	return messages
+}
+
+func telegramMarkdownLink(label string, targetURL string) string {
+	targetURL = strings.TrimSpace(targetURL)
+	if targetURL == "" {
+		return ""
+	}
+	targetURL = strings.ReplaceAll(targetURL, "\\", "\\\\")
+	targetURL = strings.ReplaceAll(targetURL, ")", "\\)")
+	return fmt.Sprintf("[%s](%s)", label, targetURL)
 }
 
 func formatHTTPNotificationRequest(request CapturedRequest, host string) string {

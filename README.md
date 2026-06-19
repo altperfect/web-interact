@@ -15,10 +15,10 @@ Self-hosted request capture service. It creates human-readable webhook URLs such
 
    Put the random value in `APP_SECRET`, set a strong `POSTGRES_PASSWORD`, and set `PUBLIC_BASE_URL` to your webhook subdomain.
 
-2. Run it:
+2. Build and run:
 
    ```sh
-   docker compose up -d --build
+   make build && make deploy
    ```
 
 3. Open `http://localhost:8080` for local testing, or your `PUBLIC_BASE_URL` behind nginx.
