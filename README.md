@@ -2,6 +2,8 @@
 
 Self-hosted request capture service. It creates human-readable webhook URLs such as `/at/lunar-meteor-a7`, stores incoming request headers, body, method, path, query string, and client IP, and exposes captured requests on the dashboard. Guest access can be enabled per webhook with a share link.
 
+![main page](screenshots/main.jpg)
+
 ## Quick Start
 
 1. Create an env file:
