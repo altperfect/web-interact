@@ -1,0 +1,35 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-webhook}:${POSTGRES_PASSWORD:-webhook}@db:5432/${POSTGRES_DB:-webhook}?sslmode=disable
+      APP_SECRET: ${APP_SECRET:?set APP_SECRET in .env to a random 32+ character value}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-2097152}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-webhook}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-webhook}
+      POSTGRES_DB: ${POSTGRES_DB:-webhook}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-webhook} -d ${POSTGRES_DB:-webhook}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres-data:
