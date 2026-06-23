@@ -21,8 +21,11 @@
         </label>
 
         <div class="modal-actions">
+          <button class="small-action" type="button" :disabled="saving" @click="revertName">
+            Revert
+          </button>
           <button class="small-action primary-action" type="submit" :disabled="saving">
-            Save name
+            Save changes
           </button>
         </div>
       </form>
@@ -35,6 +38,7 @@ import { computed } from 'vue'
 
 const props = defineProps({
   name: { type: String, default: '' },
+  initialName: { type: String, default: '' },
   maxSymbols: { type: Number, required: true },
   saving: { type: Boolean, default: false }
 })
@@ -45,4 +49,8 @@ const nameModel = computed({
   get: () => props.name,
   set: (value) => emit('update:name', value)
 })
+
+function revertName() {
+  emit('update:name', props.initialName)
+}
 </script>

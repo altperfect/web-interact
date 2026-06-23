@@ -230,6 +230,7 @@
     <RenameWebhookModal
       v-if="renameModalOpen"
       v-model:name="renameForm.name"
+      :initial-name="renameInitialName"
       :max-symbols="maxWebhookNameSymbols"
       :saving="renameSaving"
       @close="closeRenameModal"
@@ -359,6 +360,7 @@ const highlightedWebhookSlugs = ref([])
 const deletingRequestId = ref('')
 const renameModalOpen = ref(false)
 const renameForm = ref({ name: '' })
+const renameInitialName = ref('')
 const renameSaving = ref(false)
 const requestNoteModalOpen = ref(false)
 const requestNoteForm = ref({ note: '' })
@@ -559,6 +561,7 @@ async function setWebhookTelegramEnabled(enabled) {
 function openRenameModal() {
   if (!selectedWebhook.value || shareMode) return
   closeMenus()
+  renameInitialName.value = selectedWebhook.value.slug
   renameForm.value = { name: displayWebhookName(selectedWebhook.value) }
   renameModalOpen.value = true
   error.value = ''
