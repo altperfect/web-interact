@@ -7,9 +7,6 @@
           <h1>{{ shareMode ? 'Shared stream' : 'Request capture' }}</h1>
         </div>
         <div v-if="!shareMode" class="brand-actions">
-          <button class="icon-button search-trigger" type="button" title="Search requests" @click.stop="openSearchModal">
-            <Search :size="15" :stroke-width="1.8" aria-hidden="true" />
-          </button>
           <button class="new-button" type="button" :disabled="busy" @click.stop="createWebhook">
             <Plus :size="15" :stroke-width="1.8" aria-hidden="true" />
             New
@@ -133,6 +130,9 @@
       <section class="request-nav" aria-label="Captured requests">
         <div class="rail-section-head">
           <span>Requests</span>
+          <button v-if="!shareMode" class="icon-button search-trigger" type="button" title="Search requests" @click.stop="openSearchModal">
+            <Search :size="15" :stroke-width="1.8" aria-hidden="true" />
+          </button>
         </div>
 
         <div
