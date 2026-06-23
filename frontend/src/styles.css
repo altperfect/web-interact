@@ -21,6 +21,8 @@
   --accent-soft: #e2e3e1;
   --danger: #9c3932;
   --danger-soft: #f4e8e6;
+  --new-indicator: #4b5f77;
+  --new-indicator-dot: linear-gradient(135deg, #c8d8ef 0%, #97aed1 58%, #7f92ae 100%);
   --shadow: 0 24px 70px rgba(39, 39, 36, 0.13);
 }
 
@@ -127,6 +129,15 @@ pre {
   font-weight: 520;
   letter-spacing: 0;
   text-transform: uppercase;
+}
+
+.webhook-alert-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--new-indicator-dot);
 }
 
 h1,
@@ -274,6 +285,7 @@ h2 {
 }
 
 .icon-button {
+  position: relative;
   flex: 0 0 auto;
   display: inline-grid;
   place-items: center;
@@ -296,6 +308,16 @@ h2 {
   border-color: var(--line);
   background: var(--panel-soft);
   color: var(--text);
+}
+
+.selector-alert-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 2px rgba(250, 250, 248, 0.92);
+  pointer-events: none;
 }
 
 .telegram-settings-trigger {
@@ -401,7 +423,7 @@ h2 {
   padding: 1px 6px;
   border-radius: 999px;
   background: rgba(91, 116, 151, 0.12);
-  color: #4b5f77;
+  color: var(--new-indicator);
   font-size: 10px;
   font-weight: 560;
   text-transform: uppercase;

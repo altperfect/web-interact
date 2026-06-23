@@ -285,7 +285,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Check,
   ChevronDown,
@@ -328,6 +328,7 @@ import { loadStoredPrefs, loadStoredValue, saveStoredPrefs, saveStoredValue } fr
 const autoSwitchStorageKey = 'webhook-auto-switch'
 const soundStorageKey = 'webhook-sound-alerts'
 const selectedWebhookStorageKey = 'webhook-selected-slug'
+const pageTitleBase = 'Webhook Console'
 const maxWebhookNameSymbols = 80
 const maxRequestNoteSymbols = 200
 
@@ -449,6 +450,12 @@ const selectedShareUrl = computed(() => {
   return `${window.location.origin}/share/${selectedWebhook.value.slug}/${selectedRequest.value.id}?id=${url.searchParams.get('id')}`
 })
 
+const hasWebhookAlerts = computed(() => highlightedWebhookSlugs.value.length > 0)
+
+watch(hasWebhookAlerts, (hasAlerts) => {
+  document.title = hasAlerts ? `• ${pageTitleBase}` : pageTitleBase
+}, { immediate: true })
+
 onMounted(async () => {
   try {
     if (shareMode) {
@@ -470,6 +477,7 @@ onBeforeUnmount(() => {
   if (searchTimer) window.clearTimeout(searchTimer)
   abortSearch()
   window.removeEventListener('click', closeMenus)
+  document.title = pageTitleBase
 })
 
 async function loadOwned() {
@@ -861,13 +869,15 @@ async function loadWebhookSummaries() {
 
 function mergeWebhookSummaries(nextWebhooks) {
   const previousBySlug = new Map(webhooks.value.map((webhook) => [webhook.slug, webhook]))
+  const nextSlugs = new Set(nextWebhooks.map((webhook) => webhook.slug))
   nextWebhooks.forEach((webhook) => {
     const previous = previousBySlug.get(webhook.slug)
-    if (!previous || webhook.slug === selectedSlug.value || !isSoundEnabled(webhook.slug)) return
+    if (!previous || webhook.slug === selectedSlug.value) return
     if (!hasNewWebhookRequest(previous, webhook)) return
     flagWebhookHighlight(webhook.slug)
     queueRequestSound(webhook.slug, Math.max(1, webhook.requestCount - previous.requestCount))
   })
+  highlightedWebhookSlugs.value = highlightedWebhookSlugs.value.filter((slug) => nextSlugs.has(slug) && slug !== selectedSlug.value)
   webhooks.value = nextWebhooks
 }
 
@@ -1282,6 +1292,7 @@ function loadSelectedWebhookSlug() {
 
 function setSelectedSlug(slug, options = {}) {
   selectedSlug.value = slug
+  clearWebhookHighlight(slug)
   if (options.persist === false || shareMode) return
   saveSelectedWebhookSlug(slug)
 }

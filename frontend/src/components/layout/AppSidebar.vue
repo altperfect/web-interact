@@ -81,6 +81,7 @@
 
           <div class="menu-wrap">
             <button class="icon-button" type="button" title="Select webhook" @click.stop="$emit('toggle-selector')">
+              <span v-if="highlightedWebhookSlugs.length" class="webhook-alert-dot selector-alert-dot" aria-hidden="true"></span>
               <ChevronDown :size="16" :stroke-width="1.8" aria-hidden="true" />
             </button>
             <div v-if="selectorOpen" class="popover selector-menu" @click.stop>
