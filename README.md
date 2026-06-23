@@ -23,6 +23,18 @@ Self-hosted request capture service. It creates human-readable webhook URLs such
 
 3. Open `http://localhost:8080` for local testing, or your `PUBLIC_BASE_URL` behind nginx.
 
+## Features
+
+- Creation of multiple webhook URLs with optional custom names.
+- Captures method, path, query string, headers, body, client IP, and more.
+- Request body viewers for raw text, formatted JSON/XML/HTML, images, and multipart data.
+- Search across captured requests and notes.
+- Per-request notes and copyable request details.
+- Per-webhook response settings: status code, body, content type, headers, and redirects.
+- Response view showing the HTTP response sent back to the client.
+- Per-webhook guest share links.
+- New-request indicators, optional sound alerts, and Telegram notifications.
+
 ## Nginx
 
 Use [configs/nginx/webhook-site.conf](configs/nginx/webhook-site.conf) as a starting point. The important pieces are:
