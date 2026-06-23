@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+const defaultWebhookResponseBody = "ok\n"
+const defaultWebhookResponseType = "text/plain; charset=utf-8"
+const defaultWebhookResponseStatus = 200
+
 type Owner struct {
 	ID        int64
 	TokenHash string
@@ -12,16 +16,26 @@ type Owner struct {
 }
 
 type Webhook struct {
-	ID              int64
-	Slug            string
-	OwnerID         int64
-	ShareEnabled    bool
-	TelegramEnabled bool
-	ShareNonce      string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	RequestCount    int64
-	LastRequestAt   *time.Time
+	ID               int64
+	Slug             string
+	OwnerID          int64
+	ShareEnabled     bool
+	TelegramEnabled  bool
+	ShareNonce       string
+	ResponseBody     string
+	ResponseType     string
+	ResponseStatus   int
+	ResponseLocation string
+	ResponseHeaders  json.RawMessage
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	RequestCount     int64
+	LastRequestAt    *time.Time
+}
+
+type ResponseHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 type TelegramSettings struct {

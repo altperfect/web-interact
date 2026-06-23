@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -253,6 +254,8 @@ func (a *App) handleOwnerAPI(w http.ResponseWriter, r *http.Request, parts []str
 	}
 
 	switch parts[1] {
+	case "response":
+		a.handleOwnerWebhookResponse(w, r, owner.ID, slug)
 	case "share":
 		a.handleOwnerShare(w, r, owner.ID, slug)
 	case "telegram":
@@ -343,6 +346,52 @@ func (a *App) handleOwnerShare(w http.ResponseWriter, r *http.Request, ownerID i
 		return
 	}
 	webhook, err := a.store.SetShareEnabled(r.Context(), ownerID, slug, body.Enabled)
+	if err != nil {
+		writeSQLError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"webhook": a.ownerWebhookResponse(r, webhook),
+	})
+}
+
+func (a *App) handleOwnerWebhookResponse(w http.ResponseWriter, r *http.Request, ownerID int64, slug string) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		Body        string           `json:"body"`
+		ContentType string           `json:"contentType"`
+		StatusCode  int              `json:"statusCode"`
+		Location    string           `json:"location"`
+		Headers     []ResponseHeader `json:"headers"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	statusCode := normalizeResponseStatusCode(body.StatusCode)
+	if !validResponseStatusCode(statusCode) {
+		writeError(w, http.StatusBadRequest, "status code must be between 100 and 599")
+		return
+	}
+	contentType := normalizeResponseContentType(body.ContentType)
+	if !validHeaderValue(contentType) {
+		writeError(w, http.StatusBadRequest, "content type is invalid")
+		return
+	}
+	location, err := a.normalizeResponseLocation(r, slug, statusCode, body.Location)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	headers, err := normalizeExtraResponseHeaders(body.Headers)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	webhook, err := a.store.SetWebhookResponse(r.Context(), ownerID, slug, body.Body, contentType, statusCode, location, headers)
 	if err != nil {
 		writeSQLError(w, err)
 		return
@@ -626,7 +675,7 @@ func (a *App) handleCapture(w http.ResponseWriter, r *http.Request) {
 			if webhook.TelegramEnabled {
 				a.notifyTelegramAsync(webhook, request, r.Host, a.requestDetailURL(r, webhook, request))
 			}
-			a.writeCaptureResponse(w, r)
+			a.writeCaptureResponse(w, r, webhook)
 			return
 		}
 		publicID, err = randomBase62(32)
@@ -637,13 +686,22 @@ func (a *App) handleCapture(w http.ResponseWriter, r *http.Request) {
 	writeCapturePlain(w, http.StatusInternalServerError, false)
 }
 
-func (a *App) writeCaptureResponse(w http.ResponseWriter, r *http.Request) {
+func (a *App) writeCaptureResponse(w http.ResponseWriter, r *http.Request, webhook Webhook) {
+	for _, header := range responseHeadersFromWebhook(webhook) {
+		w.Header().Add(header.Name, header.Value)
+	}
+	statusCode := normalizeResponseStatusCode(webhook.ResponseStatus)
+	contentType := normalizeResponseContentType(webhook.ResponseType)
+	w.Header().Set("Content-Type", contentType)
+	if isRedirectStatus(statusCode) && webhook.ResponseLocation != "" && !a.locationTargetsWebhook(r, webhook.Slug, webhook.ResponseLocation) {
+		w.Header().Set("Location", webhook.ResponseLocation)
+	}
 	if r.Method == http.MethodHead {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(a.cfg.CaptureStatusCode)
+		w.WriteHeader(statusCode)
 		return
 	}
-	writeCapturePlain(w, a.cfg.CaptureStatusCode, a.cfg.CaptureStatusCode >= 200 && a.cfg.CaptureStatusCode < 300)
+	w.WriteHeader(statusCode)
+	_, _ = w.Write([]byte(webhook.ResponseBody))
 }
 
 func writeCapturePlain(w http.ResponseWriter, status int, ok bool) {
@@ -654,6 +712,132 @@ func writeCapturePlain(w http.ResponseWriter, status int, ok bool) {
 		return
 	}
 	_, _ = w.Write([]byte("error\n"))
+}
+
+func normalizeResponseContentType(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultWebhookResponseType
+	}
+	return value
+}
+
+func normalizeResponseStatusCode(value int) int {
+	if value == 0 {
+		return defaultWebhookResponseStatus
+	}
+	return value
+}
+
+func validResponseStatusCode(value int) bool {
+	return value >= 100 && value <= 599
+}
+
+func isRedirectStatus(value int) bool {
+	return value >= 300 && value <= 399
+}
+
+func validHeaderValue(value string) bool {
+	return len(value) <= 4000 && !strings.ContainsAny(value, "\r\n")
+}
+
+func (a *App) normalizeResponseLocation(r *http.Request, slug string, statusCode int, value string) (string, error) {
+	if !isRedirectStatus(statusCode) {
+		return "", nil
+	}
+	location := strings.TrimSpace(value)
+	if location == "" {
+		return "", errors.New("location is required for 3xx responses")
+	}
+	if !validHeaderValue(location) {
+		return "", errors.New("location is invalid")
+	}
+	parsed, err := url.Parse(location)
+	if err != nil || (!parsed.IsAbs() && !strings.HasPrefix(location, "/")) {
+		return "", errors.New("location must be an absolute URL or absolute path")
+	}
+	if a.locationTargetsWebhook(r, slug, location) {
+		return "", errors.New("location cannot point to the same webhook")
+	}
+	return location, nil
+}
+
+func (a *App) locationTargetsWebhook(r *http.Request, slug string, location string) bool {
+	base, err := url.Parse(fmt.Sprintf("%s/at/%s", a.baseURL(r), slug))
+	if err != nil {
+		return false
+	}
+	ref, err := url.Parse(location)
+	if err != nil {
+		return false
+	}
+	resolved := base.ResolveReference(ref)
+	targetSlug, ok := captureSlug(resolved.Path)
+	return ok && targetSlug == slug
+}
+
+func normalizeExtraResponseHeaders(headers []ResponseHeader) ([]ResponseHeader, error) {
+	out := make([]ResponseHeader, 0, len(headers))
+	for _, header := range headers {
+		name := strings.TrimSpace(header.Name)
+		if name == "" && header.Value == "" {
+			continue
+		}
+		if !validHeaderName(name) {
+			return nil, fmt.Errorf("header name %q is invalid", name)
+		}
+		canonicalName := http.CanonicalHeaderKey(name)
+		if reservedResponseHeader(canonicalName) {
+			return nil, fmt.Errorf("%s is managed by response settings", canonicalName)
+		}
+		if !validHeaderValue(header.Value) {
+			return nil, fmt.Errorf("header %s value is invalid", canonicalName)
+		}
+		out = append(out, ResponseHeader{Name: canonicalName, Value: header.Value})
+	}
+	return out, nil
+}
+
+func validHeaderName(name string) bool {
+	if name == "" || len(name) > 100 {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func reservedResponseHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Content-Type", "Location", "Content-Length":
+		return true
+	default:
+		return false
+	}
+}
+
+func responseHeadersFromWebhook(webhook Webhook) []ResponseHeader {
+	if len(webhook.ResponseHeaders) == 0 {
+		return nil
+	}
+	var headers []ResponseHeader
+	if err := json.Unmarshal(webhook.ResponseHeaders, &headers); err != nil {
+		return nil
+	}
+	normalized, err := normalizeExtraResponseHeaders(headers)
+	if err != nil {
+		return nil
+	}
+	return normalized
 }
 
 func (a *App) ensureOwner(w http.ResponseWriter, r *http.Request) (Owner, string, bool) {
@@ -747,6 +931,12 @@ func (a *App) webhookResponse(r *http.Request, webhook Webhook) webhookDTO {
 func (a *App) ownerWebhookResponse(r *http.Request, webhook Webhook) webhookDTO {
 	dto := a.webhookResponse(r, webhook)
 	dto.TelegramEnabled = &webhook.TelegramEnabled
+	dto.ResponseBody = &webhook.ResponseBody
+	dto.ResponseContentType = &webhook.ResponseType
+	responseStatus := normalizeResponseStatusCode(webhook.ResponseStatus)
+	dto.ResponseStatusCode = &responseStatus
+	dto.ResponseLocation = &webhook.ResponseLocation
+	dto.ResponseHeaders = responseHeadersFromWebhook(webhook)
 	return dto
 }
 
@@ -863,15 +1053,20 @@ func (a *App) clientIP(r *http.Request) string {
 }
 
 type webhookDTO struct {
-	Slug            string     `json:"slug"`
-	URL             string     `json:"url"`
-	ShareEnabled    bool       `json:"shareEnabled"`
-	ShareURL        *string    `json:"shareUrl"`
-	TelegramEnabled *bool      `json:"telegramEnabled,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
-	RequestCount    int64      `json:"requestCount"`
-	LastRequestAt   *time.Time `json:"lastRequestAt"`
+	Slug                string           `json:"slug"`
+	URL                 string           `json:"url"`
+	ShareEnabled        bool             `json:"shareEnabled"`
+	ShareURL            *string          `json:"shareUrl"`
+	TelegramEnabled     *bool            `json:"telegramEnabled,omitempty"`
+	ResponseBody        *string          `json:"responseBody,omitempty"`
+	ResponseContentType *string          `json:"responseContentType,omitempty"`
+	ResponseStatusCode  *int             `json:"responseStatusCode,omitempty"`
+	ResponseLocation    *string          `json:"responseLocation,omitempty"`
+	ResponseHeaders     []ResponseHeader `json:"responseHeaders,omitempty"`
+	CreatedAt           time.Time        `json:"createdAt"`
+	UpdatedAt           time.Time        `json:"updatedAt"`
+	RequestCount        int64            `json:"requestCount"`
+	LastRequestAt       *time.Time       `json:"lastRequestAt"`
 }
 
 type telegramSettingsDTO struct {

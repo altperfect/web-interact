@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"net/http/httptest"
+	"testing"
+)
 
 func TestCaptureSlug(t *testing.T) {
 	tests := []struct {
@@ -46,6 +49,52 @@ func TestShareTokenChangesWithSecret(t *testing.T) {
 	b := New(Config{AppSecret: []byte("abcdef0123456789abcdef0123456789")}, nil)
 	if a.shareToken(webhook) == b.shareToken(webhook) {
 		t.Fatal("share token should depend on APP_SECRET")
+	}
+}
+
+func TestNormalizeResponseContentType(t *testing.T) {
+	if got := normalizeResponseContentType(""); got != defaultWebhookResponseType {
+		t.Fatalf("empty content type = %q, want %q", got, defaultWebhookResponseType)
+	}
+	if got := normalizeResponseContentType(" text/html "); got != "text/html" {
+		t.Fatalf("trimmed content type = %q, want text/html", got)
+	}
+	if validHeaderValue("text/plain\r\nX-Test: bad") {
+		t.Fatal("expected CRLF content type to be invalid")
+	}
+}
+
+func TestResponseStatusAndRedirectValidation(t *testing.T) {
+	if validResponseStatusCode(999) {
+		t.Fatal("expected 999 to be rejected")
+	}
+	if !validResponseStatusCode(302) {
+		t.Fatal("expected 302 to be valid")
+	}
+
+	app := New(Config{}, nil)
+	req := httptest.NewRequest("PATCH", "http://example.test/api/webhooks/silent-comet-a7/response", nil)
+	if _, err := app.normalizeResponseLocation(req, "silent-comet-a7", 302, "/at/silent-comet-a7"); err == nil {
+		t.Fatal("expected redirect to same webhook to be rejected")
+	}
+	if got, err := app.normalizeResponseLocation(req, "silent-comet-a7", 302, "/thanks"); err != nil || got != "/thanks" {
+		t.Fatalf("safe relative redirect = %q, %v; want /thanks, nil", got, err)
+	}
+	if got, err := app.normalizeResponseLocation(req, "silent-comet-a7", 200, "/at/silent-comet-a7"); err != nil || got != "" {
+		t.Fatalf("non-redirect location = %q, %v; want empty, nil", got, err)
+	}
+}
+
+func TestNormalizeExtraResponseHeaders(t *testing.T) {
+	headers, err := normalizeExtraResponseHeaders([]ResponseHeader{{Name: "x-test", Value: "ok"}})
+	if err != nil {
+		t.Fatalf("normalizeExtraResponseHeaders() error = %v", err)
+	}
+	if headers[0].Name != "X-Test" || headers[0].Value != "ok" {
+		t.Fatalf("headers[0] = %#v, want canonical X-Test", headers[0])
+	}
+	if _, err := normalizeExtraResponseHeaders([]ResponseHeader{{Name: "Location", Value: "/next"}}); err == nil {
+		t.Fatal("expected reserved Location header to be rejected")
 	}
 }
 

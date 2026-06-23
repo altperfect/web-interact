@@ -50,6 +50,10 @@
                   <Send :size="15" :stroke-width="1.8" aria-hidden="true" />
                   {{ selectedWebhook.telegramEnabled ? 'Telegram enabled' : 'Telegram disabled' }}
                 </button>
+                <button type="button" @click="openResponseModal">
+                  <FileText :size="15" :stroke-width="1.8" aria-hidden="true" />
+                  Response settings
+                </button>
                 <button type="button" @click="setShareEnabled(!selectedWebhook.shareEnabled)">
                   <Share2 :size="15" :stroke-width="1.8" aria-hidden="true" />
                   {{ selectedWebhook.shareEnabled ? 'Disable guest access' : 'Enable guest access' }}
@@ -379,6 +383,96 @@
       </section>
     </div>
 
+    <div v-if="responseModalOpen" class="modal-backdrop" @click="closeResponseModal">
+      <section class="telegram-modal response-modal" role="dialog" aria-modal="true" aria-labelledby="response-settings-title" @click.stop>
+        <header class="modal-head">
+          <div>
+            <p class="overline">Webhook response</p>
+            <h2 id="response-settings-title">{{ selectedWebhook?.slug }}</h2>
+          </div>
+        </header>
+
+        <form class="telegram-form response-form" @submit.prevent="saveResponseSettings">
+          <div class="form-grid response-grid">
+            <label class="field">
+              <span>Status code</span>
+              <input
+                v-model.number="responseForm.statusCode"
+                type="number"
+                min="100"
+                max="599"
+                required
+              />
+            </label>
+
+            <label class="field">
+              <span>Content-Type</span>
+              <input
+                v-model.trim="responseForm.contentType"
+                type="text"
+                required
+                autocomplete="off"
+                placeholder="text/plain; charset=utf-8"
+              />
+            </label>
+          </div>
+
+          <label v-if="responseIsRedirect" class="field">
+            <span>Location</span>
+            <input
+              v-model.trim="responseForm.location"
+              type="text"
+              required
+              autocomplete="off"
+              placeholder="https://example.com/next"
+            />
+          </label>
+
+          <section class="response-headers">
+            <div class="response-headers-head">
+              <span>Response headers</span>
+              <button class="small-action icon-only" type="button" title="Add response header" @click="addResponseHeader">
+                <Plus :size="15" :stroke-width="1.8" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div
+              v-for="header in responseForm.headers"
+              :key="header.id"
+              class="response-header-row"
+            >
+              <label class="field">
+                <span>Name</span>
+                <input v-model.trim="header.name" type="text" autocomplete="off" placeholder="X-Webhook" />
+              </label>
+              <label class="field">
+                <span>Value</span>
+                <input v-model="header.value" type="text" autocomplete="off" placeholder="debug" />
+              </label>
+              <button class="small-action icon-only danger-action" type="button" title="Remove response header" @click="removeResponseHeader(header.id)">
+                <Trash2 :size="15" :stroke-width="1.85" aria-hidden="true" />
+              </button>
+            </div>
+          </section>
+
+          <label class="field">
+            <span>Response body</span>
+            <textarea
+              v-model="responseForm.body"
+              rows="10"
+              spellcheck="false"
+            ></textarea>
+          </label>
+
+          <div class="modal-actions">
+            <button class="small-action primary-action" type="submit" :disabled="responseSaving">
+              Save response
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+
     <div v-if="telegramModalOpen" class="modal-backdrop" @click="closeTelegramModal">
       <section class="telegram-modal" role="dialog" aria-modal="true" aria-labelledby="telegram-settings-title" @click.stop>
         <header class="modal-head">
@@ -523,6 +617,9 @@ const soundPrefs = ref(loadSoundPrefs())
 const highlightedWebhookSlugs = ref([])
 const copiedTarget = ref('')
 const deletingRequestId = ref('')
+const responseModalOpen = ref(false)
+const responseForm = ref({ body: '', contentType: '', statusCode: 200, location: '', headers: [] })
+const responseSaving = ref(false)
 const telegramModalOpen = ref(false)
 const telegramSettingsLoaded = ref(false)
 const telegramSettings = ref({ ...emptyTelegramSettings })
@@ -540,8 +637,11 @@ let searchAbortController = null
 let audioContext = null
 let soundQueue = 0
 let playingSound = false
+let responseHeaderId = 0
 
 const selectedWebhook = computed(() => webhooks.value.find((hook) => hook.slug === selectedSlug.value) || null)
+
+const responseIsRedirect = computed(() => isRedirectStatus(responseForm.value.statusCode))
 
 const showRequestListSkeleton = computed(() => loading.value || showingRequestSkeleton.value)
 
@@ -727,6 +827,85 @@ async function setWebhookTelegramEnabled(enabled) {
   } finally {
     busy.value = false
   }
+}
+
+function openResponseModal() {
+  if (!selectedWebhook.value || shareMode) return
+  closeMenus()
+  resetResponseForm()
+  responseModalOpen.value = true
+}
+
+function closeResponseModal() {
+  if (responseSaving.value) return
+  responseModalOpen.value = false
+}
+
+function resetResponseForm() {
+  responseForm.value = {
+    body: selectedWebhook.value?.responseBody ?? 'ok\n',
+    contentType: selectedWebhook.value?.responseContentType || 'text/plain; charset=utf-8',
+    statusCode: selectedWebhook.value?.responseStatusCode || 200,
+    location: selectedWebhook.value?.responseLocation || '',
+    headers: (selectedWebhook.value?.responseHeaders || []).map((header) => ({
+      id: nextResponseHeaderId(),
+      name: header.name || '',
+      value: header.value || ''
+    }))
+  }
+}
+
+async function saveResponseSettings() {
+  if (!selectedWebhook.value || shareMode) return
+  responseSaving.value = true
+  error.value = ''
+  try {
+    const data = await api(`/api/webhooks/${selectedWebhook.value.slug}/response`, {
+      method: 'PATCH',
+      headers: csrfHeaders(),
+      body: JSON.stringify(responsePayload())
+    })
+    webhooks.value = webhooks.value.map((hook) => (hook.slug === data.webhook.slug ? data.webhook : hook))
+    responseModalOpen.value = false
+    showNotice('Response settings saved')
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    responseSaving.value = false
+  }
+}
+
+function responsePayload() {
+  return {
+    body: responseForm.value.body,
+    contentType: responseForm.value.contentType,
+    statusCode: Number(responseForm.value.statusCode),
+    location: responseIsRedirect.value ? responseForm.value.location : '',
+    headers: responseForm.value.headers
+      .filter((header) => header.name || header.value)
+      .map((header) => ({ name: header.name, value: header.value }))
+  }
+}
+
+function addResponseHeader() {
+  responseForm.value.headers = [
+    ...responseForm.value.headers,
+    { id: nextResponseHeaderId(), name: '', value: '' }
+  ]
+}
+
+function removeResponseHeader(id) {
+  responseForm.value.headers = responseForm.value.headers.filter((header) => header.id !== id)
+}
+
+function nextResponseHeaderId() {
+  responseHeaderId += 1
+  return responseHeaderId
+}
+
+function isRedirectStatus(value) {
+  const status = Number(value)
+  return status >= 300 && status <= 399
 }
 
 async function selectWebhook(slug) {

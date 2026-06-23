@@ -63,11 +63,21 @@ CREATE TABLE IF NOT EXISTS webhooks (
 	share_enabled BOOLEAN NOT NULL DEFAULT false,
 	telegram_enabled BOOLEAN NOT NULL DEFAULT false,
 	share_nonce TEXT NOT NULL,
+	response_body TEXT NOT NULL DEFAULT E'ok\n',
+	response_content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
+	response_status_code INTEGER NOT NULL DEFAULT 200,
+	response_location TEXT NOT NULL DEFAULT '',
+	response_headers JSONB NOT NULL DEFAULT '[]'::jsonb,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS telegram_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS response_body TEXT NOT NULL DEFAULT E'ok\n';
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS response_content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8';
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS response_status_code INTEGER NOT NULL DEFAULT 200;
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS response_location TEXT NOT NULL DEFAULT '';
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS response_headers JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE INDEX IF NOT EXISTS webhooks_owner_id_idx ON webhooks(owner_id);
 
@@ -137,7 +147,7 @@ func (s *Store) CreateWebhook(ctx context.Context, ownerID int64) (Webhook, erro
 INSERT INTO webhooks (slug, owner_id, share_nonce)
 VALUES ($1, $2, $3)
 ON CONFLICT (slug) DO NOTHING
-RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, created_at, updated_at
+RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
 `, slug, ownerID, nonce).Scan(
 			&webhook.ID,
 			&webhook.Slug,
@@ -145,6 +155,11 @@ RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, crea
 			&webhook.ShareEnabled,
 			&webhook.TelegramEnabled,
 			&webhook.ShareNonce,
+			&webhook.ResponseBody,
+			&webhook.ResponseType,
+			&webhook.ResponseStatus,
+			&webhook.ResponseLocation,
+			&webhook.ResponseHeaders,
 			&webhook.CreatedAt,
 			&webhook.UpdatedAt,
 		)
@@ -168,6 +183,11 @@ SELECT
 	w.share_enabled,
 	w.telegram_enabled,
 	w.share_nonce,
+	w.response_body,
+	w.response_content_type,
+	w.response_status_code,
+	w.response_location,
+	w.response_headers,
 	w.created_at,
 	w.updated_at,
 	COUNT(r.id)::bigint AS request_count,
@@ -194,6 +214,11 @@ ORDER BY w.created_at DESC
 			&webhook.ShareEnabled,
 			&webhook.TelegramEnabled,
 			&webhook.ShareNonce,
+			&webhook.ResponseBody,
+			&webhook.ResponseType,
+			&webhook.ResponseStatus,
+			&webhook.ResponseLocation,
+			&webhook.ResponseHeaders,
 			&webhook.CreatedAt,
 			&webhook.UpdatedAt,
 			&webhook.RequestCount,
@@ -226,6 +251,11 @@ SELECT
 	w.share_enabled,
 	w.telegram_enabled,
 	w.share_nonce,
+	w.response_body,
+	w.response_content_type,
+	w.response_status_code,
+	w.response_location,
+	w.response_headers,
 	w.created_at,
 	w.updated_at,
 	(SELECT COUNT(*)::bigint FROM captured_requests r WHERE r.webhook_id = w.id) AS request_count,
@@ -242,6 +272,11 @@ FROM webhooks w
 		&webhook.ShareEnabled,
 		&webhook.TelegramEnabled,
 		&webhook.ShareNonce,
+		&webhook.ResponseBody,
+		&webhook.ResponseType,
+		&webhook.ResponseStatus,
+		&webhook.ResponseLocation,
+		&webhook.ResponseHeaders,
 		&webhook.CreatedAt,
 		&webhook.UpdatedAt,
 		&webhook.RequestCount,
@@ -271,7 +306,7 @@ func (s *Store) SetShareEnabled(ctx context.Context, ownerID int64, slug string,
 UPDATE webhooks
 SET share_enabled = $3, updated_at = now()
 WHERE owner_id = $1 AND slug = $2
-RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, created_at, updated_at
+RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
 `, ownerID, slug, enabled).Scan(
 		&webhook.ID,
 		&webhook.Slug,
@@ -279,6 +314,11 @@ RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, crea
 		&webhook.ShareEnabled,
 		&webhook.TelegramEnabled,
 		&webhook.ShareNonce,
+		&webhook.ResponseBody,
+		&webhook.ResponseType,
+		&webhook.ResponseStatus,
+		&webhook.ResponseLocation,
+		&webhook.ResponseHeaders,
 		&webhook.CreatedAt,
 		&webhook.UpdatedAt,
 	)
@@ -291,7 +331,7 @@ func (s *Store) SetTelegramEnabled(ctx context.Context, ownerID int64, slug stri
 UPDATE webhooks
 SET telegram_enabled = $3, updated_at = now()
 WHERE owner_id = $1 AND slug = $2
-RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, created_at, updated_at
+RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
 `, ownerID, slug, enabled).Scan(
 		&webhook.ID,
 		&webhook.Slug,
@@ -299,6 +339,45 @@ RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, crea
 		&webhook.ShareEnabled,
 		&webhook.TelegramEnabled,
 		&webhook.ShareNonce,
+		&webhook.ResponseBody,
+		&webhook.ResponseType,
+		&webhook.ResponseStatus,
+		&webhook.ResponseLocation,
+		&webhook.ResponseHeaders,
+		&webhook.CreatedAt,
+		&webhook.UpdatedAt,
+	)
+	return webhook, err
+}
+
+func (s *Store) SetWebhookResponse(ctx context.Context, ownerID int64, slug string, body string, contentType string, statusCode int, location string, headers []ResponseHeader) (Webhook, error) {
+	encodedHeaders, err := json.Marshal(headers)
+	if err != nil {
+		return Webhook{}, err
+	}
+	var webhook Webhook
+	err = s.db.QueryRowContext(ctx, `
+UPDATE webhooks
+SET response_body = $3,
+	response_content_type = $4,
+	response_status_code = $5,
+	response_location = $6,
+	response_headers = $7::jsonb,
+	updated_at = now()
+WHERE owner_id = $1 AND slug = $2
+RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
+`, ownerID, slug, body, contentType, statusCode, location, encodedHeaders).Scan(
+		&webhook.ID,
+		&webhook.Slug,
+		&webhook.OwnerID,
+		&webhook.ShareEnabled,
+		&webhook.TelegramEnabled,
+		&webhook.ShareNonce,
+		&webhook.ResponseBody,
+		&webhook.ResponseType,
+		&webhook.ResponseStatus,
+		&webhook.ResponseLocation,
+		&webhook.ResponseHeaders,
 		&webhook.CreatedAt,
 		&webhook.UpdatedAt,
 	)
@@ -496,6 +575,11 @@ SELECT
 	w.share_enabled,
 	w.telegram_enabled,
 	w.share_nonce,
+	w.response_body,
+	w.response_content_type,
+	w.response_status_code,
+	w.response_location,
+	w.response_headers,
 	w.created_at,
 	w.updated_at,
 	(SELECT COUNT(*)::bigint FROM captured_requests cr WHERE cr.webhook_id = w.id) AS request_count,
@@ -548,6 +632,11 @@ AND (
 			&result.Webhook.ShareEnabled,
 			&result.Webhook.TelegramEnabled,
 			&result.Webhook.ShareNonce,
+			&result.Webhook.ResponseBody,
+			&result.Webhook.ResponseType,
+			&result.Webhook.ResponseStatus,
+			&result.Webhook.ResponseLocation,
+			&result.Webhook.ResponseHeaders,
 			&result.Webhook.CreatedAt,
 			&result.Webhook.UpdatedAt,
 			&result.Webhook.RequestCount,
