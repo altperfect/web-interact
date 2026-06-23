@@ -909,6 +909,46 @@ h2 {
   white-space: pre;
 }
 
+.response-viewer {
+  display: grid;
+  gap: 10px;
+  padding-top: 18px;
+}
+
+.response-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.response-viewer-head .section-label {
+  margin-bottom: 0;
+}
+
+.response-textarea {
+  width: 100%;
+  min-height: 220px;
+  max-height: 420px;
+  resize: none;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid rgba(52, 52, 48, 0.08);
+  border-radius: 8px;
+  background: rgba(229, 230, 227, 0.66);
+  caret-color: transparent;
+  color: #303231;
+  cursor: default;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  white-space: pre;
+}
+
+.response-textarea:focus {
+  border-color: var(--line-strong);
+  outline: none;
+}
+
 .body-image-view {
   display: grid;
   place-items: center;

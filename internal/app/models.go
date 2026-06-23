@@ -53,17 +53,20 @@ type TelegramSettings struct {
 }
 
 type CapturedRequest struct {
-	ID            int64
-	WebhookID     int64
-	PublicID      string
-	Method        string
-	Path          string
-	QueryString   string
-	RemoteIP      string
-	Headers       json.RawMessage
-	Body          []byte
-	BodyTruncated bool
-	ContentLength int64
-	Note          string
-	CreatedAt     time.Time
+	ID                 int64
+	WebhookID          int64
+	PublicID           string
+	Method             string
+	Path               string
+	QueryString        string
+	RemoteIP           string
+	Headers            json.RawMessage
+	Body               []byte
+	BodyTruncated      bool
+	ContentLength      int64
+	ResponseStatusCode int
+	ResponseHeaders    json.RawMessage
+	ResponseBody       string
+	Note               string
+	CreatedAt          time.Time
 }

@@ -197,6 +197,19 @@
           </div>
           <pre v-else class="body-view" :class="{ 'body-view-formatted': bodyView.kind !== 'default' }">{{ bodyView.text }}</pre>
         </details>
+
+        <section class="response-viewer" aria-label="Response sent to client">
+          <div class="response-viewer-head">
+            <div class="section-label">Response</div>
+            <button class="body-copy-button" type="button" title="Copy response" @click="copyResponse">
+              <Transition name="icon-fade" mode="out-in">
+                <Check v-if="copiedTarget === 'response'" key="response-check" :size="14" :stroke-width="1.9" aria-hidden="true" />
+                <Copy v-else key="response-copy" :size="14" :stroke-width="1.85" aria-hidden="true" />
+              </Transition>
+            </button>
+          </div>
+          <textarea class="response-textarea" :value="responseDisplay" readonly spellcheck="false"></textarea>
+        </section>
       </section>
 
       <section v-else-if="selectedWebhook" class="blank-detail">
@@ -304,6 +317,7 @@ import {
 } from '../utils/formatters'
 import {
   formatHTTPClipboardRequest,
+  formatHTTPResponse,
   headerNameCopyTarget,
   headerValueCopyTarget,
   headerValueText
@@ -406,6 +420,8 @@ const {
 const selectedWebhook = computed(() => webhooks.value.find((hook) => hook.slug === selectedSlug.value) || null)
 
 const responseIsRedirect = computed(() => isRedirectStatus(responseForm.value.statusCode))
+
+const responseDisplay = computed(() => formatHTTPResponse(selectedRequest.value))
 
 const showRequestListSkeleton = computed(() => loading.value || showingRequestSkeleton.value)
 
@@ -1014,6 +1030,11 @@ function copyRequestBody() {
     ? selectedRequest.value.bodyBase64
     : selectedRequest.value.bodyText
   void copy(value || '', 'request-body')
+}
+
+function copyResponse() {
+  if (!selectedRequest.value) return
+  void copy(responseDisplay.value, 'response')
 }
 
 function copyFullRequest() {

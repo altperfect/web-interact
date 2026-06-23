@@ -725,24 +725,28 @@ func (a *App) handleCapture(w http.ResponseWriter, r *http.Request) {
 		writeCapturePlain(w, http.StatusInternalServerError, false)
 		return
 	}
+	response := a.captureResponseSnapshot(r, webhook)
 	for i := 0; i < 5; i++ {
 		request, err := a.store.CreateRequest(r.Context(), RequestInput{
-			WebhookID:     webhook.ID,
-			PublicID:      publicID,
-			Method:        r.Method,
-			Path:          r.URL.Path,
-			QueryString:   r.URL.RawQuery,
-			RemoteIP:      a.clientIP(r),
-			Headers:       cloneHeaders(r.Header),
-			Body:          body,
-			BodyTruncated: truncated,
-			ContentLength: contentLength(r, body, truncated),
+			WebhookID:          webhook.ID,
+			PublicID:           publicID,
+			Method:             r.Method,
+			Path:               r.URL.Path,
+			QueryString:        r.URL.RawQuery,
+			RemoteIP:           a.clientIP(r),
+			Headers:            cloneHeaders(r.Header),
+			Body:               body,
+			BodyTruncated:      truncated,
+			ContentLength:      contentLength(r, body, truncated),
+			ResponseStatusCode: response.StatusCode,
+			ResponseHeaders:    response.Headers,
+			ResponseBody:       response.Body,
 		})
 		if err == nil {
 			if webhook.TelegramEnabled {
 				a.notifyTelegramAsync(webhook, request, r.Host, a.requestDetailURL(r, webhook, request))
 			}
-			a.writeCaptureResponse(w, r, webhook)
+			writeCaptureResponse(w, response)
 			return
 		}
 		publicID, err = randomBase62(32)
@@ -753,22 +757,43 @@ func (a *App) handleCapture(w http.ResponseWriter, r *http.Request) {
 	writeCapturePlain(w, http.StatusInternalServerError, false)
 }
 
-func (a *App) writeCaptureResponse(w http.ResponseWriter, r *http.Request, webhook Webhook) {
-	for _, header := range responseHeadersFromWebhook(webhook) {
-		w.Header().Add(header.Name, header.Value)
-	}
+type captureResponseSnapshot struct {
+	StatusCode int
+	Headers    []ResponseHeader
+	Body       string
+}
+
+func (a *App) captureResponseSnapshot(r *http.Request, webhook Webhook) captureResponseSnapshot {
 	statusCode := normalizeResponseStatusCode(webhook.ResponseStatus)
 	contentType := normalizeResponseContentType(webhook.ResponseType)
-	w.Header().Set("Content-Type", contentType)
+	headers := []ResponseHeader{{Name: "Content-Type", Value: contentType}}
+	headers = append(headers, responseHeadersFromWebhook(webhook)...)
 	if isRedirectStatus(statusCode) && webhook.ResponseLocation != "" && !a.locationTargetsWebhook(r, webhook.Slug, webhook.ResponseLocation) {
-		w.Header().Set("Location", webhook.ResponseLocation)
+		headers = append(headers, ResponseHeader{Name: "Location", Value: webhook.ResponseLocation})
 	}
+	body := webhook.ResponseBody
 	if r.Method == http.MethodHead {
-		w.WriteHeader(statusCode)
-		return
+		body = ""
 	}
-	w.WriteHeader(statusCode)
-	_, _ = w.Write([]byte(webhook.ResponseBody))
+	return captureResponseSnapshot{
+		StatusCode: statusCode,
+		Headers:    headers,
+		Body:       body,
+	}
+}
+
+func writeCaptureResponse(w http.ResponseWriter, response captureResponseSnapshot) {
+	for _, header := range response.Headers {
+		if strings.EqualFold(header.Name, "Content-Type") {
+			w.Header().Set(header.Name, header.Value)
+			continue
+		}
+		w.Header().Add(header.Name, header.Value)
+	}
+	w.WriteHeader(response.StatusCode)
+	if response.Body != "" {
+		_, _ = w.Write([]byte(response.Body))
+	}
 }
 
 func writeCapturePlain(w http.ResponseWriter, status int, ok bool) {
@@ -1070,28 +1095,37 @@ func (a *App) ownerRequestResponse(r *http.Request, webhook Webhook, request Cap
 func (a *App) requestResponseWithNotes(r *http.Request, webhook Webhook, request CapturedRequest, includeNote bool) requestDTO {
 	var headers map[string][]string
 	_ = json.Unmarshal(request.Headers, &headers)
+	var responseHeaders []ResponseHeader
+	_ = json.Unmarshal(request.ResponseHeaders, &responseHeaders)
 	bodyText, bodyBase64, encoding := encodeBody(request.Body)
 	target := request.Path
 	if request.QueryString != "" {
 		target += "?" + request.QueryString
 	}
+	responseStatus := normalizeResponseStatusCode(request.ResponseStatusCode)
+	if !validResponseStatusCode(responseStatus) {
+		responseStatus = defaultWebhookResponseStatus
+	}
 	dto := requestDTO{
-		ID:            request.PublicID,
-		Method:        request.Method,
-		Path:          request.Path,
-		QueryString:   request.QueryString,
-		Target:        target,
-		RemoteIP:      request.RemoteIP,
-		Headers:       headers,
-		BodyText:      bodyText,
-		BodyBase64:    bodyBase64,
-		BodyEncoding:  encoding,
-		BodySize:      len(request.Body),
-		BodyTruncated: request.BodyTruncated,
-		ContentLength: request.ContentLength,
-		CreatedAt:     request.CreatedAt,
-		DetailURL:     a.requestDetailURL(r, webhook, request),
-		ShareURL:      fmt.Sprintf("%s/share/%s/%s?id=%s", a.baseURL(r), webhook.Slug, request.PublicID, a.shareToken(webhook)),
+		ID:                 request.PublicID,
+		Method:             request.Method,
+		Path:               request.Path,
+		QueryString:        request.QueryString,
+		Target:             target,
+		RemoteIP:           request.RemoteIP,
+		Headers:            headers,
+		BodyText:           bodyText,
+		BodyBase64:         bodyBase64,
+		BodyEncoding:       encoding,
+		BodySize:           len(request.Body),
+		BodyTruncated:      request.BodyTruncated,
+		ContentLength:      request.ContentLength,
+		ResponseStatusCode: responseStatus,
+		ResponseHeaders:    responseHeaders,
+		ResponseBody:       request.ResponseBody,
+		CreatedAt:          request.CreatedAt,
+		DetailURL:          a.requestDetailURL(r, webhook, request),
+		ShareURL:           fmt.Sprintf("%s/share/%s/%s?id=%s", a.baseURL(r), webhook.Slug, request.PublicID, a.shareToken(webhook)),
 	}
 	if includeNote {
 		note := request.Note
@@ -1171,23 +1205,26 @@ type telegramSettingsDTO struct {
 }
 
 type requestDTO struct {
-	ID            string              `json:"id"`
-	Method        string              `json:"method"`
-	Path          string              `json:"path"`
-	QueryString   string              `json:"queryString"`
-	Target        string              `json:"target"`
-	RemoteIP      string              `json:"remoteIp"`
-	Headers       map[string][]string `json:"headers"`
-	BodyText      string              `json:"bodyText"`
-	BodyBase64    string              `json:"bodyBase64"`
-	BodyEncoding  string              `json:"bodyEncoding"`
-	BodySize      int                 `json:"bodySize"`
-	BodyTruncated bool                `json:"bodyTruncated"`
-	ContentLength int64               `json:"contentLength"`
-	Note          *string             `json:"note,omitempty"`
-	CreatedAt     time.Time           `json:"createdAt"`
-	DetailURL     string              `json:"detailUrl"`
-	ShareURL      string              `json:"shareUrl"`
+	ID                 string              `json:"id"`
+	Method             string              `json:"method"`
+	Path               string              `json:"path"`
+	QueryString        string              `json:"queryString"`
+	Target             string              `json:"target"`
+	RemoteIP           string              `json:"remoteIp"`
+	Headers            map[string][]string `json:"headers"`
+	BodyText           string              `json:"bodyText"`
+	BodyBase64         string              `json:"bodyBase64"`
+	BodyEncoding       string              `json:"bodyEncoding"`
+	BodySize           int                 `json:"bodySize"`
+	BodyTruncated      bool                `json:"bodyTruncated"`
+	ContentLength      int64               `json:"contentLength"`
+	ResponseStatusCode int                 `json:"responseStatusCode"`
+	ResponseHeaders    []ResponseHeader    `json:"responseHeaders"`
+	ResponseBody       string              `json:"responseBody"`
+	Note               *string             `json:"note,omitempty"`
+	CreatedAt          time.Time           `json:"createdAt"`
+	DetailURL          string              `json:"detailUrl"`
+	ShareURL           string              `json:"shareUrl"`
 }
 
 type requestSearchResultDTO struct {

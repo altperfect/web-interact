@@ -108,11 +108,17 @@ CREATE TABLE IF NOT EXISTS captured_requests (
 	body BYTEA NOT NULL,
 	body_truncated BOOLEAN NOT NULL,
 	content_length BIGINT NOT NULL,
+	response_status_code INTEGER NOT NULL DEFAULT 200,
+	response_headers JSONB NOT NULL DEFAULT '[{"name":"Content-Type","value":"text/plain; charset=utf-8"}]'::jsonb,
+	response_body TEXT NOT NULL DEFAULT E'ok\n',
 	note TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 ALTER TABLE captured_requests ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT '';
+ALTER TABLE captured_requests ADD COLUMN IF NOT EXISTS response_status_code INTEGER NOT NULL DEFAULT 200;
+ALTER TABLE captured_requests ADD COLUMN IF NOT EXISTS response_headers JSONB NOT NULL DEFAULT '[{"name":"Content-Type","value":"text/plain; charset=utf-8"}]'::jsonb;
+ALTER TABLE captured_requests ADD COLUMN IF NOT EXISTS response_body TEXT NOT NULL DEFAULT E'ok\n';
 
 CREATE INDEX IF NOT EXISTS captured_requests_webhook_created_idx ON captured_requests(webhook_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS captured_requests_created_idx ON captured_requests(created_at);
@@ -493,16 +499,19 @@ RETURNING owner_id, bot_token, chat_id, proxy_enabled, proxy_host, proxy_port, p
 }
 
 type RequestInput struct {
-	WebhookID     int64
-	PublicID      string
-	Method        string
-	Path          string
-	QueryString   string
-	RemoteIP      string
-	Headers       map[string][]string
-	Body          []byte
-	BodyTruncated bool
-	ContentLength int64
+	WebhookID          int64
+	PublicID           string
+	Method             string
+	Path               string
+	QueryString        string
+	RemoteIP           string
+	Headers            map[string][]string
+	Body               []byte
+	BodyTruncated      bool
+	ContentLength      int64
+	ResponseStatusCode int
+	ResponseHeaders    []ResponseHeader
+	ResponseBody       string
 }
 
 type RequestSearchResult struct {
@@ -512,6 +521,10 @@ type RequestSearchResult struct {
 
 func (s *Store) CreateRequest(ctx context.Context, input RequestInput) (CapturedRequest, error) {
 	headers, err := json.Marshal(input.Headers)
+	if err != nil {
+		return CapturedRequest{}, err
+	}
+	responseHeaders, err := json.Marshal(input.ResponseHeaders)
 	if err != nil {
 		return CapturedRequest{}, err
 	}
@@ -527,10 +540,13 @@ INSERT INTO captured_requests (
 	headers,
 	body,
 	body_truncated,
-	content_length
+	content_length,
+	response_status_code,
+	response_headers,
+	response_body
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
-RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, note, created_at
+VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12::jsonb, $13)
+RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, response_status_code, response_headers, response_body, note, created_at
 `,
 		input.WebhookID,
 		input.PublicID,
@@ -542,6 +558,9 @@ RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, head
 		input.Body,
 		input.BodyTruncated,
 		input.ContentLength,
+		input.ResponseStatusCode,
+		responseHeaders,
+		input.ResponseBody,
 	).Scan(
 		&request.ID,
 		&request.WebhookID,
@@ -554,6 +573,9 @@ RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, head
 		&request.Body,
 		&request.BodyTruncated,
 		&request.ContentLength,
+		&request.ResponseStatusCode,
+		&request.ResponseHeaders,
+		&request.ResponseBody,
 		&request.Note,
 		&request.CreatedAt,
 	)
@@ -565,7 +587,7 @@ func (s *Store) ListRequests(ctx context.Context, webhookID int64, limit int) ([
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, note, created_at
+SELECT id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, response_status_code, response_headers, response_body, note, created_at
 FROM captured_requests
 WHERE webhook_id = $1
 ORDER BY created_at DESC
@@ -591,6 +613,9 @@ LIMIT $2
 			&request.Body,
 			&request.BodyTruncated,
 			&request.ContentLength,
+			&request.ResponseStatusCode,
+			&request.ResponseHeaders,
+			&request.ResponseBody,
 			&request.Note,
 			&request.CreatedAt,
 		); err != nil {
@@ -637,6 +662,9 @@ SELECT
 	r.body,
 	r.body_truncated,
 	r.content_length,
+	r.response_status_code,
+	r.response_headers,
+	r.response_body,
 	r.note,
 	r.created_at
 FROM captured_requests r
@@ -697,6 +725,9 @@ AND (
 			&result.Request.Body,
 			&result.Request.BodyTruncated,
 			&result.Request.ContentLength,
+			&result.Request.ResponseStatusCode,
+			&result.Request.ResponseHeaders,
+			&result.Request.ResponseBody,
 			&result.Request.Note,
 			&result.Request.CreatedAt,
 		); err != nil {
@@ -713,7 +744,7 @@ AND (
 func (s *Store) GetRequest(ctx context.Context, webhookID int64, publicID string) (CapturedRequest, error) {
 	var request CapturedRequest
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, note, created_at
+SELECT id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, response_status_code, response_headers, response_body, note, created_at
 FROM captured_requests
 WHERE webhook_id = $1 AND public_id = $2
 `, webhookID, publicID).Scan(
@@ -728,6 +759,9 @@ WHERE webhook_id = $1 AND public_id = $2
 		&request.Body,
 		&request.BodyTruncated,
 		&request.ContentLength,
+		&request.ResponseStatusCode,
+		&request.ResponseHeaders,
+		&request.ResponseBody,
 		&request.Note,
 		&request.CreatedAt,
 	)
@@ -740,7 +774,7 @@ func (s *Store) SetRequestNote(ctx context.Context, webhookID int64, publicID st
 UPDATE captured_requests
 SET note = $3
 WHERE webhook_id = $1 AND public_id = $2
-RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, note, created_at
+RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, response_status_code, response_headers, response_body, note, created_at
 `, webhookID, publicID, note).Scan(
 		&request.ID,
 		&request.WebhookID,
@@ -753,6 +787,9 @@ RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, head
 		&request.Body,
 		&request.BodyTruncated,
 		&request.ContentLength,
+		&request.ResponseStatusCode,
+		&request.ResponseHeaders,
+		&request.ResponseBody,
 		&request.Note,
 		&request.CreatedAt,
 	)
