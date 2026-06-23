@@ -412,6 +412,7 @@ import {
 
 const autoSwitchStorageKey = 'webhook-auto-switch'
 const soundStorageKey = 'webhook-sound-alerts'
+const selectedWebhookStorageKey = 'webhook-selected-slug'
 
 const emptyTelegramSettings = {
   configured: false,
@@ -545,7 +546,8 @@ async function loadOwned() {
     await createWebhook(true)
     return
   }
-  selectedSlug.value = initialRoute.slug || webhooks.value[0]?.slug || ''
+  const nextSlug = resolveOwnedInitialSlug()
+  setSelectedSlug(nextSlug, { persist: !initialRoute.slug || hasWebhookSlug(nextSlug) })
   if (selectedSlug.value) {
     await loadRequests(initialRoute.requestId)
   }
@@ -557,7 +559,7 @@ async function loadShared() {
   }
   const data = await api(`/api/share/${initialRoute.slug}?id=${encodeURIComponent(shareToken)}`)
   webhooks.value = [data.webhook]
-  selectedSlug.value = data.webhook.slug
+  setSelectedSlug(data.webhook.slug, { persist: false })
   requests.value = data.requests
   selectInitialRequest(initialRoute.requestId)
 }
@@ -575,7 +577,7 @@ async function createWebhook(silent = false) {
       headers: csrfHeaders()
     })
     webhooks.value = [data.webhook, ...webhooks.value]
-    selectedSlug.value = data.webhook.slug
+    setSelectedSlug(data.webhook.slug)
     requests.value = []
     selectedRequest.value = null
     history.replaceState({}, '', '/')
@@ -598,7 +600,7 @@ async function deleteWebhook() {
       headers: csrfHeaders()
     })
     webhooks.value = webhooks.value.filter((hook) => hook.slug !== selectedWebhook.value.slug)
-    selectedSlug.value = webhooks.value[0]?.slug || ''
+    setSelectedSlug(webhooks.value[0]?.slug || '')
     requests.value = []
     selectedRequest.value = null
     history.replaceState({}, '', '/')
@@ -655,7 +657,7 @@ async function setWebhookTelegramEnabled(enabled) {
 async function selectWebhook(slug) {
   clearWebhookHighlight(slug)
   if (selectedSlug.value === slug) return
-  selectedSlug.value = slug
+  setSelectedSlug(slug)
   selectedRequest.value = null
   requests.value = []
   history.replaceState({}, '', shareMode ? `/share/${slug}?id=${encodeURIComponent(shareToken)}` : '/')
@@ -1159,11 +1161,50 @@ function loadSoundPrefs() {
   return loadStoredPrefs(soundStorageKey)
 }
 
+function resolveOwnedInitialSlug() {
+  if (initialRoute.slug) return initialRoute.slug
+  const storedSlug = loadSelectedWebhookSlug()
+  if (storedSlug && hasWebhookSlug(storedSlug)) {
+    return storedSlug
+  }
+  return webhooks.value[0]?.slug || ''
+}
+
+function hasWebhookSlug(slug) {
+  return webhooks.value.some((webhook) => webhook.slug === slug)
+}
+
 function loadStoredPrefs(key) {
   try {
     return JSON.parse(window.localStorage.getItem(key) || '{}')
   } catch {
     return {}
+  }
+}
+
+function loadSelectedWebhookSlug() {
+  try {
+    return window.localStorage.getItem(selectedWebhookStorageKey) || ''
+  } catch {
+    return ''
+  }
+}
+
+function setSelectedSlug(slug, options = {}) {
+  selectedSlug.value = slug
+  if (options.persist === false || shareMode) return
+  saveSelectedWebhookSlug(slug)
+}
+
+function saveSelectedWebhookSlug(slug) {
+  try {
+    if (slug) {
+      window.localStorage.setItem(selectedWebhookStorageKey, slug)
+    } else {
+      window.localStorage.removeItem(selectedWebhookStorageKey)
+    }
+  } catch {
+    // Ignore storage failures; route-based navigation still works.
   }
 }
 
