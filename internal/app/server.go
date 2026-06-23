@@ -26,6 +26,9 @@ type App struct {
 	store *Store
 }
 
+const maxWebhookNameRunes = 80
+const maxRequestNoteRunes = 200
+
 func New(cfg Config, store *Store) *App {
 	return &App{cfg: cfg, store: store}
 }
@@ -254,6 +257,8 @@ func (a *App) handleOwnerAPI(w http.ResponseWriter, r *http.Request, parts []str
 	}
 
 	switch parts[1] {
+	case "name":
+		a.handleOwnerWebhookName(w, r, owner.ID, slug)
 	case "response":
 		a.handleOwnerWebhookResponse(w, r, owner.ID, slug)
 	case "share":
@@ -331,6 +336,33 @@ func (a *App) handleTelegramAPI(w http.ResponseWriter, r *http.Request, parts []
 	}
 
 	writeError(w, http.StatusNotFound, "not found")
+}
+
+func (a *App) handleOwnerWebhookName(w http.ResponseWriter, r *http.Request, ownerID int64, slug string) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	name, err := normalizeWebhookDisplayName(body.Name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	webhook, err := a.store.SetWebhookName(r.Context(), ownerID, slug, name)
+	if err != nil {
+		writeSQLError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"webhook": a.ownerWebhookResponse(r, webhook),
+	})
 }
 
 func (a *App) handleOwnerShare(w http.ResponseWriter, r *http.Request, ownerID int64, slug string) {
@@ -528,11 +560,19 @@ func (a *App) handleOwnerRequests(w http.ResponseWriter, r *http.Request, ownerI
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"requests": a.requestResponses(r, webhook, requests),
+			"requests": a.ownerRequestResponses(r, webhook, requests),
 		})
 		return
 	}
-	if len(parts) != 1 || !validatePublicID(parts[0]) {
+	if len(parts) < 1 || !validatePublicID(parts[0]) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if len(parts) == 2 && parts[1] == "note" {
+		a.handleOwnerRequestNote(w, r, webhook, parts[0])
+		return
+	}
+	if len(parts) != 1 {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
@@ -559,7 +599,34 @@ func (a *App) handleOwnerRequests(w http.ResponseWriter, r *http.Request, ownerI
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"request": a.requestResponse(r, webhook, request),
+		"request": a.ownerRequestResponse(r, webhook, request),
+	})
+}
+
+func (a *App) handleOwnerRequestNote(w http.ResponseWriter, r *http.Request, webhook Webhook, requestID string) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	note, err := normalizeRequestNote(body.Note)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	request, err := a.store.SetRequestNote(r.Context(), webhook.ID, requestID, note)
+	if err != nil {
+		writeSQLError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"request": a.ownerRequestResponse(r, webhook, request),
 	})
 }
 
@@ -914,6 +981,7 @@ func (a *App) webhookResponse(r *http.Request, webhook Webhook) webhookDTO {
 	base := a.baseURL(r)
 	dto := webhookDTO{
 		Slug:          webhook.Slug,
+		Name:          webhookDisplayName(webhook),
 		URL:           fmt.Sprintf("%s/at/%s", base, webhook.Slug),
 		ShareEnabled:  webhook.ShareEnabled,
 		CreatedAt:     webhook.CreatedAt,
@@ -964,9 +1032,17 @@ func telegramTestErrorMessage(err error) string {
 }
 
 func (a *App) requestResponses(r *http.Request, webhook Webhook, requests []CapturedRequest) []requestDTO {
+	return a.requestResponsesWithNotes(r, webhook, requests, false)
+}
+
+func (a *App) ownerRequestResponses(r *http.Request, webhook Webhook, requests []CapturedRequest) []requestDTO {
+	return a.requestResponsesWithNotes(r, webhook, requests, true)
+}
+
+func (a *App) requestResponsesWithNotes(r *http.Request, webhook Webhook, requests []CapturedRequest, includeNotes bool) []requestDTO {
 	out := make([]requestDTO, 0, len(requests))
 	for _, request := range requests {
-		out = append(out, a.requestResponse(r, webhook, request))
+		out = append(out, a.requestResponseWithNotes(r, webhook, request, includeNotes))
 	}
 	return out
 }
@@ -976,13 +1052,22 @@ func (a *App) searchResultResponses(r *http.Request, results []RequestSearchResu
 	for _, result := range results {
 		out = append(out, requestSearchResultDTO{
 			WebhookSlug: result.Webhook.Slug,
-			Request:     a.requestResponse(r, result.Webhook, result.Request),
+			WebhookName: webhookDisplayName(result.Webhook),
+			Request:     a.ownerRequestResponse(r, result.Webhook, result.Request),
 		})
 	}
 	return out
 }
 
 func (a *App) requestResponse(r *http.Request, webhook Webhook, request CapturedRequest) requestDTO {
+	return a.requestResponseWithNotes(r, webhook, request, false)
+}
+
+func (a *App) ownerRequestResponse(r *http.Request, webhook Webhook, request CapturedRequest) requestDTO {
+	return a.requestResponseWithNotes(r, webhook, request, true)
+}
+
+func (a *App) requestResponseWithNotes(r *http.Request, webhook Webhook, request CapturedRequest, includeNote bool) requestDTO {
 	var headers map[string][]string
 	_ = json.Unmarshal(request.Headers, &headers)
 	bodyText, bodyBase64, encoding := encodeBody(request.Body)
@@ -990,7 +1075,7 @@ func (a *App) requestResponse(r *http.Request, webhook Webhook, request Captured
 	if request.QueryString != "" {
 		target += "?" + request.QueryString
 	}
-	return requestDTO{
+	dto := requestDTO{
 		ID:            request.PublicID,
 		Method:        request.Method,
 		Path:          request.Path,
@@ -1008,6 +1093,11 @@ func (a *App) requestResponse(r *http.Request, webhook Webhook, request Captured
 		DetailURL:     a.requestDetailURL(r, webhook, request),
 		ShareURL:      fmt.Sprintf("%s/share/%s/%s?id=%s", a.baseURL(r), webhook.Slug, request.PublicID, a.shareToken(webhook)),
 	}
+	if includeNote {
+		note := request.Note
+		dto.Note = &note
+	}
+	return dto
 }
 
 func (a *App) requestDetailURL(r *http.Request, webhook Webhook, request CapturedRequest) string {
@@ -1054,6 +1144,7 @@ func (a *App) clientIP(r *http.Request) string {
 
 type webhookDTO struct {
 	Slug                string           `json:"slug"`
+	Name                string           `json:"name"`
 	URL                 string           `json:"url"`
 	ShareEnabled        bool             `json:"shareEnabled"`
 	ShareURL            *string          `json:"shareUrl"`
@@ -1093,6 +1184,7 @@ type requestDTO struct {
 	BodySize      int                 `json:"bodySize"`
 	BodyTruncated bool                `json:"bodyTruncated"`
 	ContentLength int64               `json:"contentLength"`
+	Note          *string             `json:"note,omitempty"`
 	CreatedAt     time.Time           `json:"createdAt"`
 	DetailURL     string              `json:"detailUrl"`
 	ShareURL      string              `json:"shareUrl"`
@@ -1100,6 +1192,7 @@ type requestDTO struct {
 
 type requestSearchResultDTO struct {
 	WebhookSlug string     `json:"webhookSlug"`
+	WebhookName string     `json:"webhookName"`
 	Request     requestDTO `json:"request"`
 }
 
@@ -1202,6 +1295,50 @@ func validateSlug(slug string) bool {
 		return false
 	}
 	return true
+}
+
+func normalizeWebhookDisplayName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("webhook name is required")
+	}
+	if utf8.RuneCountInString(name) > maxWebhookNameRunes {
+		return "", fmt.Errorf("webhook name must be at most %d symbols", maxWebhookNameRunes)
+	}
+	if containsForbiddenTextControl(name, false) {
+		return "", errors.New("webhook name contains invalid characters")
+	}
+	return name, nil
+}
+
+func normalizeRequestNote(note string) (string, error) {
+	note = strings.TrimSpace(note)
+	if utf8.RuneCountInString(note) > maxRequestNoteRunes {
+		return "", fmt.Errorf("request note must be at most %d symbols", maxRequestNoteRunes)
+	}
+	if containsForbiddenTextControl(note, true) {
+		return "", errors.New("request note contains invalid characters")
+	}
+	return note, nil
+}
+
+func containsForbiddenTextControl(value string, allowWhitespace bool) bool {
+	for _, r := range value {
+		if allowWhitespace && (r == '\n' || r == '\r' || r == '\t') {
+			continue
+		}
+		if r < 32 || r == 127 {
+			return true
+		}
+	}
+	return false
+}
+
+func webhookDisplayName(webhook Webhook) string {
+	if strings.TrimSpace(webhook.Name) == "" {
+		return webhook.Slug
+	}
+	return webhook.Name
 }
 
 func isMutating(method string) bool {

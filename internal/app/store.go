@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS owners (
 CREATE TABLE IF NOT EXISTS webhooks (
 	id BIGSERIAL PRIMARY KEY,
 	slug TEXT NOT NULL UNIQUE,
+	display_name TEXT NOT NULL DEFAULT '',
 	owner_id BIGINT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
 	share_enabled BOOLEAN NOT NULL DEFAULT false,
 	telegram_enabled BOOLEAN NOT NULL DEFAULT false,
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS webhooks (
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS telegram_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS response_body TEXT NOT NULL DEFAULT E'ok\n';
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS response_content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8';
@@ -106,8 +108,11 @@ CREATE TABLE IF NOT EXISTS captured_requests (
 	body BYTEA NOT NULL,
 	body_truncated BOOLEAN NOT NULL,
 	content_length BIGINT NOT NULL,
+	note TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE captured_requests ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS captured_requests_webhook_created_idx ON captured_requests(webhook_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS captured_requests_created_idx ON captured_requests(created_at);
@@ -144,13 +149,14 @@ func (s *Store) CreateWebhook(ctx context.Context, ownerID int64) (Webhook, erro
 		}
 		var webhook Webhook
 		err = s.db.QueryRowContext(ctx, `
-INSERT INTO webhooks (slug, owner_id, share_nonce)
-VALUES ($1, $2, $3)
+INSERT INTO webhooks (slug, display_name, owner_id, share_nonce)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (slug) DO NOTHING
-RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
-`, slug, ownerID, nonce).Scan(
+RETURNING id, slug, display_name, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
+`, slug, slug, ownerID, nonce).Scan(
 			&webhook.ID,
 			&webhook.Slug,
+			&webhook.Name,
 			&webhook.OwnerID,
 			&webhook.ShareEnabled,
 			&webhook.TelegramEnabled,
@@ -179,6 +185,7 @@ func (s *Store) ListWebhooks(ctx context.Context, ownerID int64) ([]Webhook, err
 SELECT
 	w.id,
 	w.slug,
+	w.display_name,
 	w.owner_id,
 	w.share_enabled,
 	w.telegram_enabled,
@@ -210,6 +217,7 @@ ORDER BY w.created_at DESC
 		if err := rows.Scan(
 			&webhook.ID,
 			&webhook.Slug,
+			&webhook.Name,
 			&webhook.OwnerID,
 			&webhook.ShareEnabled,
 			&webhook.TelegramEnabled,
@@ -247,6 +255,7 @@ func (s *Store) getWebhook(ctx context.Context, where string, args ...any) (Webh
 SELECT
 	w.id,
 	w.slug,
+	w.display_name,
 	w.owner_id,
 	w.share_enabled,
 	w.telegram_enabled,
@@ -268,6 +277,7 @@ FROM webhooks w
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(
 		&webhook.ID,
 		&webhook.Slug,
+		&webhook.Name,
 		&webhook.OwnerID,
 		&webhook.ShareEnabled,
 		&webhook.TelegramEnabled,
@@ -300,16 +310,43 @@ func (s *Store) DeleteWebhook(ctx context.Context, ownerID int64, slug string) (
 	return affected > 0, nil
 }
 
+func (s *Store) SetWebhookName(ctx context.Context, ownerID int64, slug string, name string) (Webhook, error) {
+	var webhook Webhook
+	err := s.db.QueryRowContext(ctx, `
+UPDATE webhooks
+SET display_name = $3, updated_at = now()
+WHERE owner_id = $1 AND slug = $2
+RETURNING id, slug, display_name, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
+`, ownerID, slug, name).Scan(
+		&webhook.ID,
+		&webhook.Slug,
+		&webhook.Name,
+		&webhook.OwnerID,
+		&webhook.ShareEnabled,
+		&webhook.TelegramEnabled,
+		&webhook.ShareNonce,
+		&webhook.ResponseBody,
+		&webhook.ResponseType,
+		&webhook.ResponseStatus,
+		&webhook.ResponseLocation,
+		&webhook.ResponseHeaders,
+		&webhook.CreatedAt,
+		&webhook.UpdatedAt,
+	)
+	return webhook, err
+}
+
 func (s *Store) SetShareEnabled(ctx context.Context, ownerID int64, slug string, enabled bool) (Webhook, error) {
 	var webhook Webhook
 	err := s.db.QueryRowContext(ctx, `
 UPDATE webhooks
 SET share_enabled = $3, updated_at = now()
 WHERE owner_id = $1 AND slug = $2
-RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
+RETURNING id, slug, display_name, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
 `, ownerID, slug, enabled).Scan(
 		&webhook.ID,
 		&webhook.Slug,
+		&webhook.Name,
 		&webhook.OwnerID,
 		&webhook.ShareEnabled,
 		&webhook.TelegramEnabled,
@@ -331,10 +368,11 @@ func (s *Store) SetTelegramEnabled(ctx context.Context, ownerID int64, slug stri
 UPDATE webhooks
 SET telegram_enabled = $3, updated_at = now()
 WHERE owner_id = $1 AND slug = $2
-RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
+RETURNING id, slug, display_name, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
 `, ownerID, slug, enabled).Scan(
 		&webhook.ID,
 		&webhook.Slug,
+		&webhook.Name,
 		&webhook.OwnerID,
 		&webhook.ShareEnabled,
 		&webhook.TelegramEnabled,
@@ -365,10 +403,11 @@ SET response_body = $3,
 	response_headers = $7::jsonb,
 	updated_at = now()
 WHERE owner_id = $1 AND slug = $2
-RETURNING id, slug, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
+RETURNING id, slug, display_name, owner_id, share_enabled, telegram_enabled, share_nonce, response_body, response_content_type, response_status_code, response_location, response_headers, created_at, updated_at
 `, ownerID, slug, body, contentType, statusCode, location, encodedHeaders).Scan(
 		&webhook.ID,
 		&webhook.Slug,
+		&webhook.Name,
 		&webhook.OwnerID,
 		&webhook.ShareEnabled,
 		&webhook.TelegramEnabled,
@@ -491,7 +530,7 @@ INSERT INTO captured_requests (
 	content_length
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
-RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, created_at
+RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, note, created_at
 `,
 		input.WebhookID,
 		input.PublicID,
@@ -515,6 +554,7 @@ RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, head
 		&request.Body,
 		&request.BodyTruncated,
 		&request.ContentLength,
+		&request.Note,
 		&request.CreatedAt,
 	)
 	return request, err
@@ -525,7 +565,7 @@ func (s *Store) ListRequests(ctx context.Context, webhookID int64, limit int) ([
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, created_at
+SELECT id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, note, created_at
 FROM captured_requests
 WHERE webhook_id = $1
 ORDER BY created_at DESC
@@ -551,6 +591,7 @@ LIMIT $2
 			&request.Body,
 			&request.BodyTruncated,
 			&request.ContentLength,
+			&request.Note,
 			&request.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -571,6 +612,7 @@ func (s *Store) SearchRequests(ctx context.Context, ownerID int64, searchQuery s
 SELECT
 	w.id,
 	w.slug,
+	w.display_name,
 	w.owner_id,
 	w.share_enabled,
 	w.telegram_enabled,
@@ -595,6 +637,7 @@ SELECT
 	r.body,
 	r.body_truncated,
 	r.content_length,
+	r.note,
 	r.created_at
 FROM captured_requests r
 JOIN webhooks w ON w.id = r.webhook_id
@@ -605,6 +648,7 @@ AND (
 	OR lower(r.path) LIKE $2 ESCAPE '\'
 	OR lower(r.query_string) LIKE $2 ESCAPE '\'
 	OR lower(r.remote_ip) LIKE $2 ESCAPE '\'
+	OR lower(r.note) LIKE $2 ESCAPE '\'
 	OR lower(r.headers::text) LIKE $2 ESCAPE '\'
 	OR lower(encode(r.body, 'escape')) LIKE $2 ESCAPE '\'
 )`
@@ -628,6 +672,7 @@ AND (
 		if err := rows.Scan(
 			&result.Webhook.ID,
 			&result.Webhook.Slug,
+			&result.Webhook.Name,
 			&result.Webhook.OwnerID,
 			&result.Webhook.ShareEnabled,
 			&result.Webhook.TelegramEnabled,
@@ -652,6 +697,7 @@ AND (
 			&result.Request.Body,
 			&result.Request.BodyTruncated,
 			&result.Request.ContentLength,
+			&result.Request.Note,
 			&result.Request.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -667,7 +713,7 @@ AND (
 func (s *Store) GetRequest(ctx context.Context, webhookID int64, publicID string) (CapturedRequest, error) {
 	var request CapturedRequest
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, created_at
+SELECT id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, note, created_at
 FROM captured_requests
 WHERE webhook_id = $1 AND public_id = $2
 `, webhookID, publicID).Scan(
@@ -682,6 +728,32 @@ WHERE webhook_id = $1 AND public_id = $2
 		&request.Body,
 		&request.BodyTruncated,
 		&request.ContentLength,
+		&request.Note,
+		&request.CreatedAt,
+	)
+	return request, err
+}
+
+func (s *Store) SetRequestNote(ctx context.Context, webhookID int64, publicID string, note string) (CapturedRequest, error) {
+	var request CapturedRequest
+	err := s.db.QueryRowContext(ctx, `
+UPDATE captured_requests
+SET note = $3
+WHERE webhook_id = $1 AND public_id = $2
+RETURNING id, webhook_id, public_id, method, path, query_string, remote_ip, headers, body, body_truncated, content_length, note, created_at
+`, webhookID, publicID, note).Scan(
+		&request.ID,
+		&request.WebhookID,
+		&request.PublicID,
+		&request.Method,
+		&request.Path,
+		&request.QueryString,
+		&request.RemoteIP,
+		&request.Headers,
+		&request.Body,
+		&request.BodyTruncated,
+		&request.ContentLength,
+		&request.Note,
 		&request.CreatedAt,
 	)
 	return request, err

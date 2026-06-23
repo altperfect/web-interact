@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +41,41 @@ func TestValidatePublicID(t *testing.T) {
 	}
 	if validatePublicID("0123456789ABCDEFGHIJKLMNOPQRSTU!") {
 		t.Fatal("expected non-base62 id to be invalid")
+	}
+}
+
+func TestNormalizeWebhookDisplayName(t *testing.T) {
+	got, err := normalizeWebhookDisplayName("  test  ")
+	if err != nil {
+		t.Fatalf("normalizeWebhookDisplayName() error = %v", err)
+	}
+	if got != "test" {
+		t.Fatalf("normalizeWebhookDisplayName() = %q, want test", got)
+	}
+	if _, err := normalizeWebhookDisplayName(""); err == nil {
+		t.Fatal("expected empty webhook name to be rejected")
+	}
+	if _, err := normalizeWebhookDisplayName(strings.Repeat("x", maxWebhookNameRunes+1)); err == nil {
+		t.Fatal("expected long webhook name to be rejected")
+	}
+	if _, err := normalizeWebhookDisplayName("bad\nname"); err == nil {
+		t.Fatal("expected control character in webhook name to be rejected")
+	}
+}
+
+func TestNormalizeRequestNote(t *testing.T) {
+	got, err := normalizeRequestNote("  remember this\nline  ")
+	if err != nil {
+		t.Fatalf("normalizeRequestNote() error = %v", err)
+	}
+	if got != "remember this\nline" {
+		t.Fatalf("normalizeRequestNote() = %q, want trimmed multiline note", got)
+	}
+	if _, err := normalizeRequestNote(strings.Repeat("x", maxRequestNoteRunes+1)); err == nil {
+		t.Fatal("expected long request note to be rejected")
+	}
+	if _, err := normalizeRequestNote("bad\x00note"); err == nil {
+		t.Fatal("expected NUL in request note to be rejected")
 	}
 }
 

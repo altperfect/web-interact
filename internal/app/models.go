@@ -18,6 +18,7 @@ type Owner struct {
 type Webhook struct {
 	ID               int64
 	Slug             string
+	Name             string
 	OwnerID          int64
 	ShareEnabled     bool
 	TelegramEnabled  bool
@@ -63,5 +64,6 @@ type CapturedRequest struct {
 	Body          []byte
 	BodyTruncated bool
 	ContentLength int64
+	Note          string
 	CreatedAt     time.Time
 }

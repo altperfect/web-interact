@@ -568,11 +568,54 @@ h2 {
 
 .request-path {
   min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 540;
+}
+
+.request-path > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
-  font-weight: 540;
+}
+
+.request-note-indicator {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: #647176;
+}
+
+.request-note-indicator:focus-visible {
+  border-radius: 5px;
+  outline: 1px solid rgba(91, 116, 151, 0.34);
+  outline-offset: 2px;
+}
+
+.note-tooltip {
+  position: fixed;
+  z-index: 190;
+  max-width: min(280px, calc(100vw - 40px));
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: #2f3334;
+  box-shadow: 0 14px 34px rgba(39, 39, 36, 0.24);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 520;
+  line-height: 1.35;
+  pointer-events: none;
+  text-align: left;
+  transform: translate(-50%, -100%);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .empty-panel {
@@ -1198,6 +1241,14 @@ h2 {
   box-shadow: 0 26px 80px rgba(39, 39, 36, 0.22);
 }
 
+.compact-modal {
+  width: min(460px, calc(100vw - 48px));
+}
+
+.compact-modal .field textarea {
+  min-height: 132px;
+}
+
 .modal-head {
   margin-bottom: 18px;
 }
@@ -1258,6 +1309,13 @@ h2 {
 .field textarea:focus {
   border-color: rgba(91, 116, 151, 0.34);
   background: rgba(255, 255, 255, 0.78);
+}
+
+.field-hint {
+  color: var(--subtle);
+  font-size: 12px;
+  font-weight: 520;
+  text-align: right;
 }
 
 .response-form {
