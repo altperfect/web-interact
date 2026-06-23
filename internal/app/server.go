@@ -122,6 +122,8 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch parts[1] {
+	case "search":
+		a.handleSearch(w, r)
 	case "telegram":
 		a.handleTelegramAPI(w, r, parts[2:])
 	case "session":
@@ -133,6 +135,35 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
+}
+
+func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	owner, _, ok := a.ensureOwner(w, r)
+	if !ok {
+		return
+	}
+	searchQuery := strings.TrimSpace(r.URL.Query().Get("q"))
+	if searchQuery == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"results": []requestSearchResultDTO{}})
+		return
+	}
+	webhookSlug := strings.TrimSpace(r.URL.Query().Get("webhook"))
+	if webhookSlug != "" && !validateSlug(webhookSlug) {
+		writeError(w, http.StatusBadRequest, "invalid webhook")
+		return
+	}
+	results, err := a.store.SearchRequests(r.Context(), owner.ID, searchQuery, webhookSlug, limitFromRequest(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not search requests")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"results": a.searchResultResponses(r, results),
+	})
 }
 
 func (a *App) handleSession(w http.ResponseWriter, r *http.Request) {
@@ -750,6 +781,17 @@ func (a *App) requestResponses(r *http.Request, webhook Webhook, requests []Capt
 	return out
 }
 
+func (a *App) searchResultResponses(r *http.Request, results []RequestSearchResult) []requestSearchResultDTO {
+	out := make([]requestSearchResultDTO, 0, len(results))
+	for _, result := range results {
+		out = append(out, requestSearchResultDTO{
+			WebhookSlug: result.Webhook.Slug,
+			Request:     a.requestResponse(r, result.Webhook, result.Request),
+		})
+	}
+	return out
+}
+
 func (a *App) requestResponse(r *http.Request, webhook Webhook, request CapturedRequest) requestDTO {
 	var headers map[string][]string
 	_ = json.Unmarshal(request.Headers, &headers)
@@ -859,6 +901,11 @@ type requestDTO struct {
 	CreatedAt     time.Time           `json:"createdAt"`
 	DetailURL     string              `json:"detailUrl"`
 	ShareURL      string              `json:"shareUrl"`
+}
+
+type requestSearchResultDTO struct {
+	WebhookSlug string     `json:"webhookSlug"`
+	Request     requestDTO `json:"request"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

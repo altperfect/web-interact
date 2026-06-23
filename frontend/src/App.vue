@@ -7,6 +7,9 @@
           <h1>{{ shareMode ? 'Shared stream' : 'Request capture' }}</h1>
         </div>
         <div v-if="!shareMode" class="brand-actions">
+          <button class="icon-button search-trigger" type="button" title="Search requests" @click.stop="openSearchModal">
+            <Search :size="15" :stroke-width="1.8" aria-hidden="true" />
+          </button>
           <button class="new-button" type="button" :disabled="busy" @click.stop="createWebhook">
             <Plus :size="15" :stroke-width="1.8" aria-hidden="true" />
             New
@@ -316,6 +319,66 @@
       </section>
     </main>
 
+    <div v-if="searchOpen" class="modal-backdrop search-backdrop" @click="closeSearchModal">
+      <section class="search-modal" role="dialog" aria-modal="true" aria-labelledby="request-search-title" @click.stop>
+        <div class="search-box">
+          <Search :size="19" :stroke-width="1.8" aria-hidden="true" />
+          <input
+            ref="searchInput"
+            v-model="searchQuery"
+            type="search"
+            autocomplete="off"
+            placeholder="Search requests"
+            aria-labelledby="request-search-title"
+            @input="scheduleSearch()"
+            @keydown.enter.prevent="openFirstSearchResult"
+            @keydown.esc.prevent="closeSearchModal"
+          />
+          <button v-if="searchQuery" class="search-clear-button" type="button" title="Clear search" @click="clearSearchQuery">
+            <X :size="16" :stroke-width="1.9" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div class="search-controls">
+          <h2 id="request-search-title">Search</h2>
+          <label class="toggle-field search-scope-toggle" :class="{ disabled: !selectedWebhook }">
+            <input
+              v-model="searchCurrentOnly"
+              type="checkbox"
+              :disabled="!selectedWebhook"
+              @change="scheduleSearch()"
+            />
+            <span>Current webhook</span>
+          </label>
+          <span v-if="searchLoading" class="search-status">Searching</span>
+        </div>
+
+        <div class="search-results">
+          <button
+            v-for="result in searchResults"
+            :key="`${result.webhookSlug}:${result.request.id}`"
+            class="search-result"
+            type="button"
+            @click="openSearchResult(result)"
+          >
+            <span class="search-result-method">{{ result.request.method }}</span>
+            <span class="search-result-main">
+              <span class="search-result-target">{{ formatSearchResultTarget(result) }}</span>
+              <span class="search-result-meta">
+                <span>{{ result.webhookSlug }}</span>
+                <span>{{ formatTime(result.request.createdAt) }}</span>
+                <span>{{ result.request.remoteIp }}</span>
+              </span>
+            </span>
+          </button>
+
+          <div v-if="searchQuery.trim() && !searchLoading && searchResults.length === 0" class="search-empty">
+            No matches
+          </div>
+        </div>
+      </section>
+    </div>
+
     <div v-if="telegramModalOpen" class="modal-backdrop" @click="closeTelegramModal">
       <section class="telegram-modal" role="dialog" aria-modal="true" aria-labelledby="telegram-settings-title" @click.stop>
         <header class="modal-head">
@@ -393,7 +456,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   Check,
   ChevronDown,
@@ -403,11 +466,13 @@ import {
   MoreHorizontal,
   Plus,
   RotateCw,
+  Search,
   Send,
   Share2,
   Trash2,
   Volume2,
-  VolumeX
+  VolumeX,
+  X
 } from '@lucide/vue'
 
 const autoSwitchStorageKey = 'webhook-auto-switch'
@@ -447,6 +512,12 @@ const error = ref('')
 const notice = ref('')
 const actionMenuOpen = ref(false)
 const selectorOpen = ref(false)
+const searchOpen = ref(false)
+const searchQuery = ref('')
+const searchResults = ref([])
+const searchLoading = ref(false)
+const searchCurrentOnly = ref(false)
+const searchInput = ref(null)
 const autoSwitchPrefs = ref(loadAutoSwitchPrefs())
 const soundPrefs = ref(loadSoundPrefs())
 const highlightedWebhookSlugs = ref([])
@@ -464,6 +535,8 @@ const shareToken = initialRoute.shareToken
 let pollTimer = null
 let noticeTimer = null
 let copiedTimer = null
+let searchTimer = null
+let searchAbortController = null
 let audioContext = null
 let soundQueue = 0
 let playingSound = false
@@ -535,6 +608,8 @@ onBeforeUnmount(() => {
   if (pollTimer) window.clearInterval(pollTimer)
   if (noticeTimer) window.clearTimeout(noticeTimer)
   if (copiedTimer) window.clearTimeout(copiedTimer)
+  if (searchTimer) window.clearTimeout(searchTimer)
+  abortSearch()
   window.removeEventListener('click', closeMenus)
 })
 
@@ -561,7 +636,7 @@ async function loadShared() {
   webhooks.value = [data.webhook]
   setSelectedSlug(data.webhook.slug, { persist: false })
   requests.value = data.requests
-  selectInitialRequest(initialRoute.requestId)
+  await selectInitialRequest(initialRoute.requestId)
 }
 
 async function createWebhook(silent = false) {
@@ -669,6 +744,125 @@ function selectWebhookFromMenu(slug) {
   void selectWebhook(slug)
 }
 
+function openSearchModal() {
+  if (shareMode) return
+  closeMenus()
+  searchCurrentOnly.value = false
+  searchOpen.value = true
+  error.value = ''
+  void nextTick(() => {
+    searchInput.value?.focus()
+  })
+  if (searchQuery.value.trim()) {
+    scheduleSearch(0)
+  }
+}
+
+function closeSearchModal() {
+  searchOpen.value = false
+  if (searchTimer) {
+    window.clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  abortSearch()
+  searchLoading.value = false
+}
+
+function clearSearchQuery() {
+  searchQuery.value = ''
+  searchResults.value = []
+  searchLoading.value = false
+  if (searchTimer) {
+    window.clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  abortSearch()
+  void nextTick(() => {
+    searchInput.value?.focus()
+  })
+}
+
+function scheduleSearch(delay = 180) {
+  if (!searchOpen.value || shareMode) return
+  if (searchTimer) window.clearTimeout(searchTimer)
+  if (!searchQuery.value.trim()) {
+    searchTimer = null
+    searchResults.value = []
+    searchLoading.value = false
+    abortSearch()
+    return
+  }
+  searchTimer = window.setTimeout(() => {
+    searchTimer = null
+    void runSearch()
+  }, delay)
+}
+
+async function runSearch() {
+  const query = searchQuery.value.trim()
+  if (!query) {
+    searchResults.value = []
+    searchLoading.value = false
+    abortSearch()
+    return
+  }
+
+  abortSearch()
+  const controller = new AbortController()
+  searchAbortController = controller
+  searchLoading.value = true
+  error.value = ''
+  const params = new URLSearchParams({
+    q: query,
+    limit: '40'
+  })
+  if (searchCurrentOnly.value && selectedSlug.value) {
+    params.set('webhook', selectedSlug.value)
+  }
+
+  try {
+    const data = await api(`/api/search?${params.toString()}`, { signal: controller.signal })
+    if (controller.signal.aborted) return
+    searchResults.value = data.results || []
+  } catch (err) {
+    if (err.name !== 'AbortError') error.value = err.message
+  } finally {
+    if (searchAbortController === controller) {
+      searchAbortController = null
+      searchLoading.value = false
+    }
+  }
+}
+
+function abortSearch() {
+  if (!searchAbortController) return
+  searchAbortController.abort()
+  searchAbortController = null
+}
+
+function openFirstSearchResult() {
+  if (searchResults.value.length === 0) {
+    scheduleSearch(0)
+    return
+  }
+  void openSearchResult(searchResults.value[0])
+}
+
+async function openSearchResult(result) {
+  const slug = result?.webhookSlug || ''
+  const request = result?.request || null
+  if (!slug || !request) return
+
+  closeSearchModal()
+  if (selectedSlug.value !== slug) {
+    setSelectedSlug(slug)
+    requests.value = []
+  }
+  selectedRequest.value = request
+  replaceRequestRoute(request)
+  await loadRequests(request.id, { skeleton: true })
+}
+
 async function loadRequests(preferredId = selectedRequest.value?.id, options = {}) {
   if (!selectedWebhook.value) return
   loadingRequests.value = true
@@ -687,7 +881,7 @@ async function loadRequests(preferredId = selectedRequest.value?.id, options = {
     }
     requests.value = data.requests
     updateSelectedWebhookCount()
-    selectInitialRequest(preferredId, previousNewestId)
+    await selectInitialRequest(preferredId, previousNewestId)
   } catch (err) {
     error.value = err.message
   } finally {
@@ -737,7 +931,7 @@ function hasNewWebhookRequest(previous, next) {
   return new Date(next.lastRequestAt).getTime() > new Date(previous.lastRequestAt).getTime()
 }
 
-function selectInitialRequest(preferredId, previousNewestId = '') {
+async function selectInitialRequest(preferredId, previousNewestId = '') {
   const newest = requests.value[0] || null
   if (previousNewestId && newest?.id && newest.id !== previousNewestId && selectedAutoSwitch.value) {
     selectedRequest.value = newest
@@ -745,9 +939,36 @@ function selectInitialRequest(preferredId, previousNewestId = '') {
     return
   }
   const match = preferredId ? requests.value.find((request) => request.id === preferredId) : null
-  selectedRequest.value = match || requests.value[0] || null
+  if (match) {
+    selectedRequest.value = match
+    replaceRequestRoute(match)
+    return
+  }
+  if (preferredId) {
+    const request = await loadRequestDetail(preferredId)
+    if (request) {
+      selectedRequest.value = request
+      replaceRequestRoute(request)
+      return
+    }
+  }
+  selectedRequest.value = newest
   if (selectedRequest.value) {
     replaceRequestRoute(selectedRequest.value)
+  }
+}
+
+async function loadRequestDetail(requestId) {
+  if (!selectedWebhook.value || !requestId) return null
+  const slug = selectedWebhook.value.slug
+  const endpoint = shareMode
+    ? `/api/share/${slug}/requests/${requestId}?id=${encodeURIComponent(shareToken)}`
+    : `/api/webhooks/${slug}/requests/${requestId}`
+  try {
+    const data = await api(endpoint)
+    return data.request || null
+  } catch {
+    return null
   }
 }
 
@@ -1248,6 +1469,14 @@ function formatTime(value) {
 function formatRequestPath(request) {
   const target = request?.target || ''
   const slug = selectedWebhook.value?.slug || ''
+  if (!slug || !target.startsWith(`/at/${slug}`)) return target || '/'
+  const rest = target.slice(`/at/${slug}`.length)
+  return rest === '' ? '/' : rest
+}
+
+function formatSearchResultTarget(result) {
+  const target = result?.request?.target || result?.request?.path || ''
+  const slug = result?.webhookSlug || ''
   if (!slug || !target.startsWith(`/at/${slug}`)) return target || '/'
   const rest = target.slice(`/at/${slug}`.length)
   return rest === '' ? '/' : rest

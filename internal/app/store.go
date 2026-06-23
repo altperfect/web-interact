@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -386,6 +387,11 @@ type RequestInput struct {
 	ContentLength int64
 }
 
+type RequestSearchResult struct {
+	Webhook Webhook
+	Request CapturedRequest
+}
+
 func (s *Store) CreateRequest(ctx context.Context, input RequestInput) (CapturedRequest, error) {
 	headers, err := json.Marshal(input.Headers)
 	if err != nil {
@@ -475,6 +481,100 @@ LIMIT $2
 	return requests, rows.Err()
 }
 
+func (s *Store) SearchRequests(ctx context.Context, ownerID int64, searchQuery string, webhookSlug string, limit int) ([]RequestSearchResult, error) {
+	if limit < 1 || limit > 100 {
+		limit = 40
+	}
+
+	needle := "%" + escapeLikePattern(strings.ToLower(strings.TrimSpace(searchQuery))) + "%"
+	args := []any{ownerID, needle}
+	query := `
+SELECT
+	w.id,
+	w.slug,
+	w.owner_id,
+	w.share_enabled,
+	w.telegram_enabled,
+	w.share_nonce,
+	w.created_at,
+	w.updated_at,
+	(SELECT COUNT(*)::bigint FROM captured_requests cr WHERE cr.webhook_id = w.id) AS request_count,
+	(SELECT MAX(created_at) FROM captured_requests cr WHERE cr.webhook_id = w.id) AS last_request_at,
+	r.id,
+	r.webhook_id,
+	r.public_id,
+	r.method,
+	r.path,
+	r.query_string,
+	r.remote_ip,
+	r.headers,
+	r.body,
+	r.body_truncated,
+	r.content_length,
+	r.created_at
+FROM captured_requests r
+JOIN webhooks w ON w.id = r.webhook_id
+WHERE w.owner_id = $1
+AND (
+	lower(r.public_id) LIKE $2 ESCAPE '\'
+	OR lower(r.method) LIKE $2 ESCAPE '\'
+	OR lower(r.path) LIKE $2 ESCAPE '\'
+	OR lower(r.query_string) LIKE $2 ESCAPE '\'
+	OR lower(r.remote_ip) LIKE $2 ESCAPE '\'
+	OR lower(r.headers::text) LIKE $2 ESCAPE '\'
+	OR lower(encode(r.body, 'escape')) LIKE $2 ESCAPE '\'
+)`
+	if webhookSlug != "" {
+		args = append(args, webhookSlug)
+		query += fmt.Sprintf("\nAND w.slug = $%d", len(args))
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf("\nORDER BY r.created_at DESC\nLIMIT $%d", len(args))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []RequestSearchResult
+	for rows.Next() {
+		var result RequestSearchResult
+		var last sql.NullTime
+		if err := rows.Scan(
+			&result.Webhook.ID,
+			&result.Webhook.Slug,
+			&result.Webhook.OwnerID,
+			&result.Webhook.ShareEnabled,
+			&result.Webhook.TelegramEnabled,
+			&result.Webhook.ShareNonce,
+			&result.Webhook.CreatedAt,
+			&result.Webhook.UpdatedAt,
+			&result.Webhook.RequestCount,
+			&last,
+			&result.Request.ID,
+			&result.Request.WebhookID,
+			&result.Request.PublicID,
+			&result.Request.Method,
+			&result.Request.Path,
+			&result.Request.QueryString,
+			&result.Request.RemoteIP,
+			&result.Request.Headers,
+			&result.Request.Body,
+			&result.Request.BodyTruncated,
+			&result.Request.ContentLength,
+			&result.Request.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if last.Valid {
+			result.Webhook.LastRequestAt = &last.Time
+		}
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
+
 func (s *Store) GetRequest(ctx context.Context, webhookID int64, publicID string) (CapturedRequest, error) {
 	var request CapturedRequest
 	err := s.db.QueryRowContext(ctx, `
@@ -508,4 +608,13 @@ func (s *Store) DeleteRequest(ctx context.Context, webhookID int64, publicID str
 		return false, err
 	}
 	return affected > 0, nil
+}
+
+func escapeLikePattern(value string) string {
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	)
+	return replacer.Replace(value)
 }
